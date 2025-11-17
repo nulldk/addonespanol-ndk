@@ -64,8 +64,14 @@ def download_and_process_file(url_or_path):
         content = response.content
 
     zip_header_b64 = os.getenv('ZIP_DECODE_BASE64')
-    decoded_data = base64.b64decode(zip_header_b64) + content
-    
+    print(f"DEBUG: Intentando decodificar zip_header_b64: {zip_header_b64[:50]}...") # Imprime los primeros 50 caracteres
+
+    try:
+        decoded_data = base64.b64decode(zip_header_b64) + content
+    except Exception as e:
+        print(f"DEBUG: ¡ERROR! La variable zip_header_b64 no es un base64 válido. Error: {e}")
+        print(f"DEBUG: Contenido completo de zip_header_b64: {zip_header_b64}")
+	raise e    
     with zipfile.ZipFile(io.BytesIO(decoded_data), 'r') as zfile:
         zfile.extractall(REPO_DIR)
         logger.info(f"Archivos extraídos en: {os.path.abspath(REPO_DIR)}")
