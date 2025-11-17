@@ -64,7 +64,7 @@ def download_and_process_file(url_or_path):
         content = response.content
 
     zip_header_b64 = os.getenv('ZIP_DECODE_BASE64')
-    print(f"DEBUG: Intentando decodificar zip_header_b64: {zip_header_b64[:50]}...") # Imprime los primeros 50 caracteres
+    print(f"DEBUG: Intentando decodificar zip_header_b64: {zip_header_b64}...") # Imprime los primeros 50 caracteres
 
     try:
         decoded_data = base64.b64decode(zip_header_b64) + content
