@@ -6,6 +6,7 @@ import shutil
 import time
 from datetime import datetime
 import asyncio
+import sys
 
 import fakeredis
 import httpx
@@ -78,6 +79,7 @@ async def check_real_debrid_1fichier_availability():
                 break
     except Exception as e:
         logger.error(f"Error al comprobar estado de hosts de RD: {e}")
+        status = "down"
     finally:
         await redis_client.set(FICHIER_STATUS_KEY, status, ex=1800)
         logger.info(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
@@ -415,7 +417,11 @@ async def actualizar_bd():
         if addon_actualizado:
             logger.info("Tarea programada: Nueva versión de ADDON detectada.")
         logger.info("Reiniciando...")
-        await trigger_render_restart()
+        if RENDER_API_URL:
+            await trigger_render_restart()
+        else:
+            sys.exit(1)
+
 
 @crontab("* * * * *", start=not IS_DEV)
 async def ping_service():
