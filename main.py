@@ -88,6 +88,21 @@ async def check_real_debrid_1fichier_availability():
 async def scheduled_fichier_check():
     await check_real_debrid_1fichier_availability()
 
+async def schedule_catalog_update_notification():
+    """Espera 15 minutos y luego llama a la URL de actualización."""
+    wait_time_seconds = 15 * 60
+    logger.info(f"Programando llamada a updatedb en {wait_time_seconds} segundos...")
+    
+    await asyncio.sleep(wait_time_seconds)
+    
+    try:
+        url = 'https://ndkcatalogs.myblacknass.synology.me/updatedb'
+        logger.info(f"Ejecutando llamada diferida a: {url}")
+        await http_client.get(url)
+        logger.info("Llamada a updatedb realizada con éxito.")
+    except Exception as e:
+        logger.error(f"Error al llamar a updatedb tras la espera: {e}")
+
 async def lifespan(app: FastAPI):
     """
     Realiza tareas de inicialización al arrancar la aplicación.
@@ -109,7 +124,7 @@ async def lifespan(app: FastAPI):
         setup_index(DB_DECRYPTED_PATH)
         logger.info("Tareas de arranque completadas.")
         if not IS_DEV:
-            requests.get('https://ndkcatalogs.myblacknass.synology.me/updatedb')
+            asyncio.create_task(schedule_catalog_update_notification())
     else:
         logger.error("No se pudo descargar la base de datos.")
     yield
