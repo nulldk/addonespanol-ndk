@@ -56,6 +56,10 @@ logger = setup_logger(__name__)
 redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
 # OPTIMIZADO: Crear un cliente httpx para reutilizar conexiones
 http_client = httpx.AsyncClient(timeout=30)
+# Hardcodeamos el proxy porque sabemos que siempre correrá en local por start.sh
+WARP_PROXY_URL = "socks5://127.0.0.1:40000"
+logger.info(f"Configurando Proxy Warp para unrestrict: {WARP_PROXY_URL}")
+warp_client = httpx.AsyncClient(timeout=30, proxies=WARP_PROXY_URL)
 
 FICHIER_STATUS_KEY = "rd_1fichier_status"
 
@@ -297,7 +301,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     metadata_provider = TMDB(config, http_client)
     media = await metadata_provider.get_metadata(stream_id, stream_type)
 
-    debrid_service = get_debrid_service(config, http_client)
+    debrid_service = get_debrid_service(config, http_client, warp_client)
     debrid_name = type(debrid_service).__name__
 
     fichier_status_rd = await redis_client.get(FICHIER_STATUS_KEY) or "up"
@@ -370,7 +374,7 @@ async def _handle_playback(config_str: str, query: str, file_name) -> str:
     logger.info("Playback no encontrado en caché, desrestringiendo en tiempo real...")
     decoded_query = decodeb64(query)
     decoded_file_name = decodeb64(file_name)
-    debrid_service = get_debrid_service(config, http_client)
+    debrid_service = get_debrid_service(config, http_client, warp_client)
 
     final_link = await _get_unrestricted_link(debrid_service, decoded_query, decoded_file_name)
 
