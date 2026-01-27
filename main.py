@@ -59,7 +59,7 @@ http_client = httpx.AsyncClient(timeout=30)
 # Hardcodeamos el proxy porque sabemos que siempre correrá en local por start.sh
 WARP_PROXY_URL = "socks5://127.0.0.1:40000"
 logger.info(f"Configurando Proxy Warp para unrestrict: {WARP_PROXY_URL}")
-warp_client = httpx.AsyncClient(timeout=30, proxies=WARP_PROXY_URL)
+warp_client = httpx.AsyncClient(timeout=30, proxy=WARP_PROXY_URL)
 
 FICHIER_STATUS_KEY = "rd_1fichier_status"
 
