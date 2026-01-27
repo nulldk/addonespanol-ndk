@@ -8,5 +8,5 @@ aiocron
 python-dotenv
 aiosqlite
 pycryptodome
-httpx
+httpx[socks]
 fakeredis

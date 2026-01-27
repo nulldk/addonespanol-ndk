@@ -7,16 +7,17 @@ class BaseDebrid:
         self.logger = setup_logger(__name__)
         self.http_client = http_client # OPTIMIZADO: Usar el cliente http asíncrono
 
-    async def get_json_response(self, url, method='get', data=None, headers=None, files=None): # OPTIMIZADO: Convertir a async
+    async def get_json_response(self, url, method='get', data=None, headers=None, files=None, client=None): # OPTIMIZADO: Convertir a async
+        client_to_use = client or self.http_client
         try:
             if method == 'get':
-                response = await self.http_client.get(url, headers=headers)
+                response = await client_to_use.get(url, headers=headers)
             elif method == 'post':
-                response = await self.http_client.post(url, data=data, headers=headers, files=files)
+                response = await client_to_use.post(url, data=data, headers=headers, files=files)
             elif method == 'put':
-                response = await self.http_client.put(url, data=data, headers=headers)
+                response = await client_to_use.put(url, data=data, headers=headers)
             elif method == 'delete':
-                response = await self.http_client.delete(url, headers=headers)
+                response = await client_to_use.delete(url, headers=headers)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 

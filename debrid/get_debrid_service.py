@@ -3,10 +3,10 @@ from debrid.alldebrid import AllDebrid
 from debrid.realdebrid import RealDebrid
 import httpx
 
-def get_debrid_service(config, http_client: httpx.AsyncClient):
+def get_debrid_service(config, http_client: httpx.AsyncClient, warp_client: httpx.AsyncClient = None):
     service_name = config['service']
     if service_name == "realdebrid":
-        debrid_service = RealDebrid(config, http_client)
+        debrid_service = RealDebrid(config, http_client, warp_client)
     elif service_name == "alldebrid":
         debrid_service = AllDebrid(config, http_client)
     else:
