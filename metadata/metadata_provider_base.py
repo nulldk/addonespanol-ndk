@@ -31,5 +31,5 @@ class MetadataProvider:
 
         return string
 
-    def get_metadata(self, id, type):
+    def get_metadata(self, id, media_type):
         raise NotImplementedError
