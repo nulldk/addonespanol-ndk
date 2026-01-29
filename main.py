@@ -301,6 +301,10 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     metadata_provider = TMDB(config, http_client)
     media = await metadata_provider.get_metadata(stream_id, stream_type)
 
+    if not media:
+        logger.warning(f"No se pudo obtener metadatos para {stream_type} {stream_id}")
+        return {"streams": []}
+
     debrid_service = get_debrid_service(config, http_client, warp_client)
     debrid_name = type(debrid_service).__name__
 

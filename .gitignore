@@ -72,3 +72,6 @@ Mipal2025-main/
 # IDE settings
 .idea/
 .vscode/env
+
+# Local test
+test_download/
