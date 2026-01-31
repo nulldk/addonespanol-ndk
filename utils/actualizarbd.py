@@ -17,7 +17,7 @@ CONTENIDO_TIMESTAMP_FILE = os.path.join(WORKING_PATH,'contenido_last_update.txt'
 ADDON_TIMESTAMP_FILE = os.path.join(WORKING_PATH,'addon_last_update.txt')
 ADDON_REPO_URL = "https://github.com/nulldk/addonespanol-ndk/commits/main.atom"
 
-async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
+async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido, write_on_update=True):
     """Función genérica para comprobar un repositorio y su fichero de timestamp."""
     logger.info(f"Comprobando actualizaciones del {tipo_contenido}...")
     
@@ -49,16 +49,17 @@ async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
 
     if latest_remote_timestamp != last_local_timestamp:
         logger.info(f"¡Nueva actualización de {tipo_contenido} detectada!")
-        with open(fichero_timestamp, 'w') as f:
-            f.write(latest_remote_timestamp)
+        if write_on_update:
+            with open(fichero_timestamp, 'w') as f:
+                f.write(latest_remote_timestamp)
         return True
     
     return False
 
-async def comprobar_actualizacion_contenido():
+async def comprobar_actualizacion_contenido(write_on_update=True):
     """Comprueba si hay actualizaciones en el repositorio de contenido."""
-    return await _comprobar_remoto(CONTENIDO_REPO_URL, CONTENIDO_TIMESTAMP_FILE, "CONTENIDO")
+    return await _comprobar_remoto(CONTENIDO_REPO_URL, CONTENIDO_TIMESTAMP_FILE, "CONTENIDO", write_on_update)
 
-async def comprobar_actualizacion_addon():
+async def comprobar_actualizacion_addon(write_on_update=True):
     """Comprueba si hay actualizaciones en el repositorio del código del addon."""
-    return await _comprobar_remoto(ADDON_REPO_URL, ADDON_TIMESTAMP_FILE, "ADDON")
+    return await _comprobar_remoto(ADDON_REPO_URL, ADDON_TIMESTAMP_FILE, "ADDON", write_on_update)
