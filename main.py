@@ -226,7 +226,7 @@ async def _get_unrestricted_link(debrid_service, original_link: str, file_name=N
     link_to_unrestrict = original_link
     try:
         if debrid_name == "RealDebrid":
-            link_to_unrestrict = await getGood1fichierlink(http_client, original_link, file_name)
+            link_to_unrestrict = await getGood1fichierlink(warp_client, original_link, file_name)
         
         unrestricted_data = await debrid_service.unrestrict_link(link_to_unrestrict)
         
@@ -319,7 +319,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         logger.info(f"No se encontraron resultados para {media.type} {stream_id}. Tiempo total: {time.time() - start_time:.2f}s")
         return {"streams": []}
 
-    tasks = [get_file_info(http_client, link) for link in search_results if '1fichier' in link]
+    tasks = [get_file_info(warp_client, link) for link in search_results if '1fichier' in link]
     file_infos = await asyncio.gather(*tasks, return_exceptions=True)
 
     info_map = {info[2]: info for info in file_infos if not isinstance(info, BaseException)}
