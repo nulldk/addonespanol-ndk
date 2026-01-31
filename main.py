@@ -430,8 +430,10 @@ async def actualizar_bd():
     """
     Tarea programada que comprueba si hay nuevas versiones y reinicia el servicio si es necesario.
     """
-    contenido_actualizado = await comprobar_actualizacion_contenido()
-    addon_actualizado = await comprobar_actualizacion_addon()
+    # NO actualizamos el fichero de timestamp aquí, solo comprobamos.
+    # El fichero se actualizará en el arranque (lifespan) tras el reinicio exitoso.
+    contenido_actualizado = await comprobar_actualizacion_contenido(write_on_update=False)
+    addon_actualizado = await comprobar_actualizacion_addon(write_on_update=False)
 
     # Si se detecta cualquier actualización, se reinicia el servicio
     if contenido_actualizado or addon_actualizado:
@@ -439,11 +441,18 @@ async def actualizar_bd():
             logger.info("Tarea programada: Nueva versión de CONTENIDO detectada.")
         if addon_actualizado:
             logger.info("Tarea programada: Nueva versión de ADDON detectada.")
-        logger.info("Reiniciando...")
+        
+        logger.info("Iniciando secuencia de reinicio...")
+        
+        # Intentar reinicio vía Render API si está disponible
         if RENDER_API_URL:
-            await trigger_render_restart()
-        else:
-            sys.exit(1)
+            if await trigger_render_restart():
+                return
+
+        # Fallback: Reinicio forzado del contenedor/proceso
+        # Esto hará que Docker/K8s/Supervisor reinicie el servicio
+        logger.warning("Render API no disponible o falló. Ejecutando sys.exit(1) para forzar reinicio.")
+        sys.exit(1)
 
 
 @crontab("* * * * *", start=not IS_DEV)
