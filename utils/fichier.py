@@ -6,12 +6,22 @@ from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# Parse keys once at startup
+_api_keys_str = os.getenv('FICHIER_API_KEY', '')
+FICHIER_API_KEYS = [k.strip() for k in _api_keys_str.split(',') if k.strip()]
+
+def get_random_api_key():
+    if not FICHIER_API_KEYS:
+        logger.warning("No FICHIER_API_KEY configured!")
+        return None
+    return random.choice(FICHIER_API_KEYS)
+
 def generate_guid(length=10):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 async def get_file_info(http_client: httpx.AsyncClient, url: str):
     info_url = "https://api.1fichier.com/v1/file/info.cgi"
-    api_key = os.getenv('FICHIER_API_KEY')
+    api_key = get_random_api_key()
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     data = {"url": url}
 
@@ -26,7 +36,7 @@ async def get_file_info(http_client: httpx.AsyncClient, url: str):
 
 async def copy_file(http_client: httpx.AsyncClient, url: str, rename=None, _retry=False):
     cp_url = "https://api.1fichier.com/v1/file/cp.cgi"
-    api_key = os.getenv('FICHIER_API_KEY')
+    api_key = get_random_api_key()
     new_filename = rename[:rename.rfind('.')] + generate_guid() if rename else generate_guid()
     
     logger.debug(f"Nuevo nombre de archivo: {new_filename}")
