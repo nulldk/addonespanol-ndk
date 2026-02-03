@@ -37,9 +37,15 @@ async def get_file_info(http_client: httpx.AsyncClient, url: str):
 async def copy_file(http_client: httpx.AsyncClient, url: str, rename=None, _retry=False):
     cp_url = "https://api.1fichier.com/v1/file/cp.cgi"
     api_key = get_random_api_key()
+    
+    if not api_key:
+        logger.error("No hay claves API de 1fichier configuradas")
+        return None, None
+    
     new_filename = rename[:rename.rfind('.')] + generate_guid() if rename else generate_guid()
     
     logger.debug(f"Nuevo nombre de archivo: {new_filename}")
+    logger.debug(f"Usando clave API: {api_key[:10]}...{api_key[-4:]}")
     data = {"urls": [url], "rename": new_filename}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -63,6 +69,14 @@ async def copy_file(http_client: httpx.AsyncClient, url: str, rename=None, _retr
         logger.debug(f"Error en la respuesta de la API al copiar: {response_json}")
         return None, None
         
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Error HTTP {e.response.status_code} al copiar archivo: {e.response.text}")
+        if e.response.status_code == 403:
+            logger.error("Error 403 Forbidden: La clave API no tiene permisos para copiar. Verifica que:")
+            logger.error("  1. La clave sea válida")
+            logger.error("  2. La cuenta tenga créditos/saldo")
+            logger.error("  3. La cuenta no sea gratuita (necesita permisos de copia)")
+        return None, None
     except httpx.RequestError as e:
         logger.error(f"Excepción de red al copiar el archivo: {e}")
         return None, None
