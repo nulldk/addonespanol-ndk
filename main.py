@@ -5,10 +5,8 @@ import re
 import shutil
 import time
 from datetime import datetime
-import asyncio
 import sys
 
-import fakeredis
 import httpx
 import requests
 from aiocron import crontab
@@ -30,6 +28,7 @@ from utils.logger import setup_logger
 from utils.parse_config import parse_config
 from utils.stremio_parser import parse_to_debrid_stream
 from utils.string_encoding import decodeb64, encodeb64
+from utils.cache import cache  # Importamos nuestro cache nativo
 
 from config import (
     VERSION,
@@ -52,7 +51,6 @@ from config import (
 
 # --- Inicialización ---
 logger = setup_logger(__name__)
-redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
 # OPTIMIZADO: Crear un cliente httpx para reutilizar conexiones
 http_client = httpx.AsyncClient(timeout=30)
 # Hardcodeamos el proxy porque sabemos que siempre correrá en local por start.sh
@@ -85,7 +83,8 @@ async def check_real_debrid_1fichier_availability():
         logger.error(f"Error al comprobar estado de hosts de RD: {e}")
         status = "down"
     finally:
-        await redis_client.set(FICHIER_STATUS_KEY, status, ex=1800)
+        # Usamos cache.set síncrono
+        cache.set(FICHIER_STATUS_KEY, status, ttl=1800)
         logger.info(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
 
 @crontab("*/15 * * * *", start=not IS_DEV)
@@ -150,7 +149,7 @@ async def lifespan(app: FastAPI):
     logger.info("Iniciando tareas de arranque...")
     os.makedirs(WORKING_PATH, exist_ok=True)
 
-    await redis_client.set(FICHIER_STATUS_KEY, "up")
+    cache.set(FICHIER_STATUS_KEY, "up")
     logger.info(f"Estado inicial de 1fichier establecido a 'up' por defecto.")
 
     logger.info("Estableciendo timestamps de arranque...")
@@ -306,6 +305,26 @@ async def _get_unrestricted_link(debrid_service, original_link: str) -> dict | N
 
 
 async def _process_single_link(debrid_service, link, config, db_calidad, db_audio, db_info):
+    # 1. Intentar recuperar metadatos del caché global (independiente del usuario)
+    cached_metadata = cache.get(link)
+    
+    if cached_metadata:
+        # Cache HIT: Reconstruimos el objeto data usando la info del cache + info de la DB
+        data = {
+            'link': link,
+            'filesize': cached_metadata.get('filesize', 0),
+            'quality': cached_metadata.get('quality', db_calidad or ''),
+            'nombre_fichero': cached_metadata.get('nombre_fichero', ''),
+            'db_calidad': db_calidad or '',
+            'db_audio': db_audio or '',
+            'db_info': db_info or '',
+            'languages': cached_metadata.get('languages'),
+            'quality_spec': cached_metadata.get('quality_spec')
+        }
+        # Devolvemos True en el tercer argumento para indicar que es válido (aunque no tengamos el final_link del usuario)
+        return (link, data, True)
+
+    # 2. Cache MISS: Consultamos a Debrid
     data = {
         'link': link,
         'filesize': 0,
@@ -321,7 +340,8 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
         if unrestricted_info:
             data['filesize'] = unrestricted_info.get('filesize', 0)
             data['nombre_fichero'] = unrestricted_info.get('filename', '')
-            final_link = unrestricted_info.get('download')
+            # Nota: final_link es específico del usuario actual, NO lo cacheamos
+            final_link_user = unrestricted_info.get('download')
             
             detected_quality = detect_quality(data['nombre_fichero']) if data['nombre_fichero'] else None
             
@@ -334,17 +354,18 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
                 data['languages'] = detect_languages(data['nombre_fichero'])
                 data['quality_spec'] = detect_quality_spec(data['nombre_fichero'])
             
-            if final_link:
-                entry = {
-                    "config": config,
-                    "link": link,
-                    "final_link": final_link,
-                    "filesize": data['filesize'],
-                }
-                encoded_link = encodeb64(link)
-                await redis_client.hset("final_links", encoded_link, json.dumps(entry))
-            
-            return (link, data, final_link) 
+            # Guardamos SOLO los metadatos en el caché global
+            if data['nombre_fichero'] and data['filesize'] > 0:
+                cache.set(link, {
+                    'filesize': data['filesize'],
+                    'quality': data['quality'],
+                    'nombre_fichero': data['nombre_fichero'],
+                    'languages': data.get('languages'),
+                    'quality_spec': data.get('quality_spec')
+                }, ttl=3600) # Cache por 1 hora
+
+            # Devolvemos el link final para este usuario (aunque en get_results no se usa para generar la lista)
+            return (link, data, final_link_user) 
     except Exception as e:
         logger.error(f"Error processing {link}: {e}")
     
@@ -357,10 +378,16 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     Busca y devuelve los streams disponibles para un item (película o serie).
     """
     if not IS_DB_READY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Servicio inicializando base de datos. Intente de nuevo en unos segundos."
-        )
+        return {
+            "streams": [
+                {
+                    "name": "⚠️ NDK",
+                    "title": "🔴 NDK ACTUALIZANDO... 🔴",
+                    "description": "El addon está cargando la base de datos. Por favor, espera unos segundos y vuelve a intentarlo.",
+                    "url": "https://google.com"
+                }
+            ]
+        }
 
     start_time = time.time()
     stream_id = stream_id.replace(".json", "")
@@ -376,7 +403,8 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     debrid_service = get_debrid_service(config, http_client, warp_client)
     debrid_name = type(debrid_service).__name__
 
-    fichier_status_rd = await redis_client.get(FICHIER_STATUS_KEY) or "up"
+    # Recuperamos estado de 1fichier del cache
+    fichier_status_rd = cache.get(FICHIER_STATUS_KEY) or "up"
 
     if media.type == "movie":
         search_results = await search_movies(media.id)
@@ -387,14 +415,11 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         logger.info(f"No se encontraron resultados para {media.type} {stream_id}. Tiempo total: {time.time() - start_time:.2f}s")
         return {"streams": []}
 
-    # Nuevo flujo: copiar primero para obtener filename, luego obtener info del archivo copiado
     tasks = []
     for result in search_results:
-        # Ahora search_results devuelve tuplas: (link, calidad, audio, info)
         if isinstance(result, tuple):
             link, db_calidad, db_audio, db_info = result
         else:
-            # Fallback por si acaso
             link = result
             db_calidad = db_audio = db_info = ""
         
@@ -404,8 +429,9 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     
     results_data = []
     
-    for link, data, final_link in processed_results:
-        if not final_link:
+    # is_valid es el tercer valor devuelto por _process_single_link (puede ser el link final o True)
+    for link, data, is_valid in processed_results:
+        if not is_valid:
             continue
 
         filesize_gb = data.get('filesize', 0) / (1024 ** 3)
@@ -420,6 +446,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
 
     streams_unfiltered = []
     for link, data in results_data:
+        # Codificamos el enlace ORIGINAL, no el unrestricteado
         encoded_link = encodeb64(link)
         encoded_file_name = encodeb64(data.get('nombre_fichero', 'unknown'))
         playback_url = f"{config['addonHost']}/playback/{config_str}/{encoded_file_name}/{encoded_link}"
@@ -436,6 +463,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
 async def _handle_playback(config_str: str, query: str, file_name) -> str:
     """
     Lógica compartida para manejar las peticiones de reproducción.
+    SIEMPRE desrestringe en tiempo real usando las credenciales del usuario actual.
     """
     if not query:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query requerido.")
@@ -443,23 +471,17 @@ async def _handle_playback(config_str: str, query: str, file_name) -> str:
     config = parse_config(config_str)
     start_time = time.time()
 
-    cached_data_json = await redis_client.hget("final_links", query)
-    if cached_data_json:
-        cached_data = json.loads(cached_data_json)
-        if cached_data.get("config") == config:
-            logger.info(f"Playback desde caché de Redis. Tiempo: {time.time() - start_time:.2f}s")
-            return cached_data["final_link"]
-
-    logger.info("Playback no encontrado en caché, desrestringiendo en tiempo real...")
+    logger.info("Solicitud de playback recibida. Desrestringiendo en tiempo real...")
     decoded_query = decodeb64(query)
-    decoded_file_name = decodeb64(file_name)
+    # file_name se recibe pero no se usa estrictamente para la lógica, es decorativo en la URL
+    
     debrid_service = get_debrid_service(config, http_client, warp_client)
 
     unrestricted_info = await _get_unrestricted_link(debrid_service, decoded_query)
     final_link = unrestricted_info.get('download') if unrestricted_info else None
 
     if final_link:
-        logger.info(f"Enlace desrestringido. Tiempo total: {time.time() - start_time:.2f}s")
+        logger.info(f"Enlace desrestringido exitosamente. Tiempo total: {time.time() - start_time:.2f}s")
         return final_link
 
     logger.error(f"No se pudo obtener el enlace final para la consulta: {query}")
