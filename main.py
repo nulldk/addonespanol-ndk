@@ -226,7 +226,8 @@ async def _get_unrestricted_link(debrid_service, original_link: str, file_name=N
     link_to_unrestrict = original_link
     try:
         if debrid_name == "RealDebrid":
-            link_to_unrestrict = await getGood1fichierlink(warp_client, original_link, file_name)
+            # Usamos http_client (sin proxy) para 1fichier
+            link_to_unrestrict = await getGood1fichierlink(http_client, original_link, file_name)
         
         unrestricted_data = await debrid_service.unrestrict_link(link_to_unrestrict)
         
@@ -342,12 +343,13 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         
         if '1fichier' in link:
             # Intento 1: Copiar el archivo primero para obtener un enlace accesible
+            # Usamos http_client (sin proxy) para 1fichier
             try:
-                copy_result = await copy_file(warp_client, link)
+                copy_result = await copy_file(http_client, link)
                 if copy_result:
                     from_url, to_url = copy_result
                     # Intento 2: Obtener info del archivo copiado (ahora debería funcionar)
-                    filename, info_data, _ = await get_file_info(warp_client, to_url)
+                    filename, info_data, _ = await get_file_info(http_client, to_url)
                     if info_data:
                         data['filesize'] = info_data.get('size', 0)
                         data['nombre_fichero'] = info_data.get('filename', filename or '')
@@ -362,7 +364,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
                 else:
                     # Si la copia falla, intentar obtener info del enlace original como último recurso
                     logger.warning(f"Copia fallida para {link}, intentando obtener info directa...")
-                    filename, info_data, _ = await get_file_info(warp_client, link)
+                    filename, info_data, _ = await get_file_info(http_client, link)
                     if info_data:
                         data['filesize'] = info_data.get('size', 0)
                         data['nombre_fichero'] = info_data.get('filename', filename or '')
