@@ -61,6 +61,38 @@ logger.info(f"Configurando Proxy Warp para unrestrict: {WARP_PROXY_URL}")
 warp_client = httpx.AsyncClient(timeout=30, proxy=WARP_PROXY_URL)
 
 
+FICHIER_STATUS_KEY = "rd_1fichier_status"
+
+async def check_real_debrid_1fichier_availability():
+    if not DEBRID_API_KEY:
+        logger.warning("No se ha configurado DEBRID_API_KEY en .env.")
+        return
+
+    url = "https://api.real-debrid.com/rest/1.0/hosts/status"
+    headers = {"Authorization": f"Bearer {DEBRID_API_KEY}"}
+    status = "up"
+    try:
+        response = await http_client.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        hosts_status = response.json()
+        
+        for host_domain, info in hosts_status.items():
+            if "1fichier" in host_domain.lower():
+                if info.get("status", "").lower() != "up":
+                    status = "down"
+                break
+    except Exception as e:
+        logger.error(f"Error al comprobar estado de hosts de RD: {e}")
+        status = "down"
+    finally:
+        await redis_client.set(FICHIER_STATUS_KEY, status, ex=1800)
+        logger.info(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
+
+@crontab("*/15 * * * *", start=not IS_DEV)
+async def scheduled_fichier_check():
+    await check_real_debrid_1fichier_availability()
+
+
 async def schedule_catalog_update_notification():
     """Espera 15 minutos y luego llama a la URL de actualización."""
     wait_time_seconds = 15 * 60
@@ -83,6 +115,9 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Iniciando tareas de arranque...")
     os.makedirs(WORKING_PATH, exist_ok=True)
+
+    await redis_client.set(FICHIER_STATUS_KEY, "up")
+    logger.info(f"Estado inicial de 1fichier establecido a 'up' por defecto.")
 
     logger.info("Estableciendo timestamps de arranque...")
     establecer_timestamp_arranque("CONTENIDO")
@@ -298,6 +333,8 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     debrid_service = get_debrid_service(config, http_client, warp_client)
     debrid_name = type(debrid_service).__name__
 
+    fichier_status_rd = await redis_client.get(FICHIER_STATUS_KEY) or "up"
+
     if media.type == "movie":
         search_results = await search_movies(media.id)
     else:
@@ -344,7 +381,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         streams_unfiltered.append(stream)
 
     streams = filter_items(streams_unfiltered, media, config=config)
-    parse_to_debrid_stream(streams, config, media, debrid_name)
+    parse_to_debrid_stream(streams, config, media, debrid_name, fichier_is_up=(fichier_status_rd == "up"))
 
     logger.info(f"Resultados encontrados. Tiempo total: {time.time() - start_time:.2f}s")
     return {"streams": streams}
