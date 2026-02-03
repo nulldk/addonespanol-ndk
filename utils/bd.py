@@ -138,12 +138,12 @@ async def search_movies(id):
         id (str or int): El ID de TMDB de la película.
 
     Returns:
-        list: Una lista de enlaces (str) asociados a la película.
+        list: Una lista de tuplas (link, calidad, audio, info) asociados a la película.
     """
     async with get_cursor() as cursor:
-        await cursor.execute("SELECT link FROM enlaces_pelis WHERE tmdb = ?", (id,))
+        await cursor.execute("SELECT link, calidad, audio, info FROM enlaces_pelis WHERE tmdb = ?", (id,))
         rows = await cursor.fetchall()
-        return [row[0] for row in rows]
+        return [(row[0], row[1], row[2], row[3]) for row in rows]
 
 async def search_tv_shows(id, season, episode):
     """
@@ -155,15 +155,15 @@ async def search_tv_shows(id, season, episode):
         episode (str or int): El número del episodio.
 
     Returns:
-        list: Una lista de enlaces (str) asociados al episodio.
+        list: Una lista de tuplas (link, calidad, audio, info) asociados al episodio.
     """
     async with get_cursor() as cursor:
         await cursor.execute(
-            "SELECT link FROM enlaces_series WHERE tmdb = ? AND temporada = ? AND episodio = ?",
+            "SELECT link, calidad, audio, info FROM enlaces_series WHERE tmdb = ? AND temporada = ? AND episodio = ?",
             (id, season, episode)
         )
         rows = await cursor.fetchall()
-        return [row[0] for row in rows]
+        return [(row[0], row[1], row[2], row[3]) for row in rows]
 
 def getMetadata(link, media_type):
     """
