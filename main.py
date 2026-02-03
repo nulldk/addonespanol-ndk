@@ -323,8 +323,14 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
             data['nombre_fichero'] = unrestricted_info.get('filename', '')
             final_link = unrestricted_info.get('download')
             
+            detected_quality = detect_quality(data['nombre_fichero']) if data['nombre_fichero'] else None
+            
+            if not detected_quality:
+                detected_quality = detect_quality(data['quality'])
+
+            data['quality'] = detected_quality or data['quality']
+
             if data['nombre_fichero']:
-                data['quality'] = detect_quality(data['nombre_fichero']) or data['quality']
                 data['languages'] = detect_languages(data['nombre_fichero'])
                 data['quality_spec'] = detect_quality_spec(data['nombre_fichero'])
             
@@ -399,6 +405,9 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     results_data = []
     
     for link, data, final_link in processed_results:
+        if not final_link:
+            continue
+
         filesize_gb = data.get('filesize', 0) / (1024 ** 3)
         if 'maxSize' in config and filesize_gb > int(config['maxSize']):
             continue
