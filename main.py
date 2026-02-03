@@ -108,6 +108,40 @@ async def schedule_catalog_update_notification():
     except Exception as e:
         logger.error(f"Error al llamar a updatedb tras la espera: {e}")
 
+# Variable global para el estado de carga de la BD
+IS_DB_READY = False
+
+async def background_db_loader():
+    """
+    Tarea en segundo plano para descargar y preparar la base de datos.
+    """
+    global IS_DB_READY
+    logger.info("Iniciando carga de base de datos en segundo plano...")
+    try:
+        # Ejecutar check_and_download en un executor para no bloquear el loop principal
+        # ya que contiene muchas operaciones de E/S bloqueantes y CPU
+        loop = asyncio.get_running_loop()
+        updated = await loop.run_in_executor(None, check_and_download)
+        
+        if updated:
+             # Si se actualizó, ejecutar setup_index también en executor por si acaso
+             await loop.run_in_executor(None, setup_index, DB_DECRYPTED_PATH)
+             logger.info("Base de datos actualizada y lista.")
+             if not IS_DEV:
+                asyncio.create_task(schedule_catalog_update_notification())
+        else:
+             logger.info("Base de datos verificada sin cambios.")
+             # Asegurar que setup_index se ejecute si ya existía la BD pero no se actualizó
+             if os.path.exists(DB_DECRYPTED_PATH):
+                 await loop.run_in_executor(None, setup_index, DB_DECRYPTED_PATH)
+        
+        IS_DB_READY = True
+        logger.info("✅ Sistema listo para recibir peticiones.")
+        
+    except Exception as e:
+        logger.error(f"Error crítico cargando la base de datos: {e}", exc_info=True)
+        # Aquí podríamos decidir si reintentar o dejar el servicio en estado degradado
+
 async def lifespan(app: FastAPI):
     """
     Realiza tareas de inicialización al arrancar la aplicación.
@@ -124,14 +158,10 @@ async def lifespan(app: FastAPI):
     establecer_timestamp_arranque("ADDON")
     logger.info("Timestamps de arranque establecidos.")
 
-    logger.info("Descargando base de datos...")
-    if check_and_download():
-        setup_index(DB_DECRYPTED_PATH)
-        logger.info("Tareas de arranque completadas.")
-        if not IS_DEV:
-            asyncio.create_task(schedule_catalog_update_notification())
-    else:
-        logger.error("No se pudo descargar la base de datos.")
+    # Lanzar la carga de BD en background
+    asyncio.create_task(background_db_loader())
+    
+    logger.info("Servidor HTTP iniciado. La carga de datos continúa en segundo plano.")
     yield
     logger.info("La aplicación se está cerrando.")
 
@@ -271,6 +301,7 @@ async def _get_unrestricted_link(debrid_service, original_link: str) -> dict | N
     except Exception as e:
         logger.error(f"Error al desrestringir el enlace {original_link} con {debrid_name}: {e}")
         return None
+
 
 
 
