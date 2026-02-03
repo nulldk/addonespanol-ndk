@@ -21,11 +21,10 @@ from starlette import status
 from debrid.get_debrid_service import get_debrid_service
 from metadata.tmdb import TMDB
 from utils.actualizarbd import comprobar_actualizacion_contenido, comprobar_actualizacion_addon, establecer_timestamp_arranque
-from utils.bd import (setup_index, getGood1fichierlink,
+from utils.bd import (setup_index,
                       search_movies, search_tv_shows)
 from utils.cargarbd import check_and_download
-from utils.detection import detect_quality, post_process_results
-from utils.fichier import get_file_info, copy_file
+from utils.detection import detect_quality, post_process_results, detect_languages, detect_quality_spec
 from utils.filter_results import filter_items
 from utils.logger import setup_logger
 from utils.parse_config import parse_config
@@ -61,36 +60,6 @@ WARP_PROXY_URL = "socks5://127.0.0.1:40000"
 logger.info(f"Configurando Proxy Warp para unrestrict: {WARP_PROXY_URL}")
 warp_client = httpx.AsyncClient(timeout=30, proxy=WARP_PROXY_URL)
 
-FICHIER_STATUS_KEY = "rd_1fichier_status"
-
-async def check_real_debrid_1fichier_availability():
-    if not DEBRID_API_KEY:
-        logger.warning("No se ha configurado DEBRID_API_KEY en .env.")
-        return
-
-    url = "https://api.real-debrid.com/rest/1.0/hosts/status"
-    headers = {"Authorization": f"Bearer {DEBRID_API_KEY}"}
-    status = "up"
-    try:
-        response = await http_client.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        hosts_status = response.json()
-        
-        for host_domain, info in hosts_status.items():
-            if "1fichier" in host_domain.lower():
-                if info.get("status", "").lower() != "up":
-                    status = "down"
-                break
-    except Exception as e:
-        logger.error(f"Error al comprobar estado de hosts de RD: {e}")
-        status = "down"
-    finally:
-        await redis_client.set(FICHIER_STATUS_KEY, status, ex=1800)
-        logger.info(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
-
-@crontab("*/15 * * * *", start=not IS_DEV)
-async def scheduled_fichier_check():
-    await check_real_debrid_1fichier_availability()
 
 async def schedule_catalog_update_notification():
     """Espera 15 minutos y luego llama a la URL de actualización."""
@@ -114,9 +83,6 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Iniciando tareas de arranque...")
     os.makedirs(WORKING_PATH, exist_ok=True)
-
-    await redis_client.set(FICHIER_STATUS_KEY, "up")
-    logger.info(f"Estado inicial de 1fichier establecido a 'up' por defecto.")
 
     logger.info("Estableciendo timestamps de arranque...")
     establecer_timestamp_arranque("CONTENIDO")
@@ -218,76 +184,99 @@ async def get_manifest():
 # --- Lógica Principal del Addon ---
 
 
-async def _get_unrestricted_link(debrid_service, original_link: str, file_name=None) -> str | None:
+async def _get_unrestricted_link(debrid_service, original_link: str) -> dict | None:
     """
     Obtiene el enlace de descarga directa (sin restricciones) de un servicio Debrid.
+    Devuelve un diccionario con metadatos: {'download': str, 'filename': str, 'filesize': int}
     """
     debrid_name = type(debrid_service).__name__
-    link_to_unrestrict = original_link
     try:
-        if debrid_name == "RealDebrid":
-            # Usamos http_client (sin proxy) para 1fichier
-            link_to_unrestrict = await getGood1fichierlink(http_client, original_link, file_name)
-        
-        unrestricted_data = await debrid_service.unrestrict_link(link_to_unrestrict)
+        unrestricted_data = await debrid_service.unrestrict_link(original_link)
         
         if not unrestricted_data:
             return None
 
+        result = {
+            'download': None,
+            'filename': None,
+            'filesize': 0
+        }
+
         if debrid_name == "RealDebrid":
+            result['download'] = unrestricted_data.get('download')
+            result['filename'] = unrestricted_data.get('filename')
+            result['filesize'] = unrestricted_data.get('filesize', 0)
+
             http_folder = debrid_service.config.get('debridHttp')
             
             if http_folder:
-                unrestricted_filename = unrestricted_data.get('filename')
+                unrestricted_filename = result['filename']
                 
                 if unrestricted_filename:
                     folder_link = await debrid_service.find_link_in_folder(http_folder, unrestricted_filename)
                     
                     if folder_link:
-                        return folder_link
+                        result['download'] = folder_link
                 else:
                     logger.warning("No se recibió 'filename' de la API de RD. Se usará el enlace por defecto.")
             
-            logger.info("Devolviendo el enlace de descarga estándar de la API de Real-Debrid.")
-            return unrestricted_data.get('download')
+            if not http_folder:
+                logger.info("Devolviendo el enlace de descarga estándar de la API de Real-Debrid.")
 
-        if debrid_name == "AllDebrid":
-            return unrestricted_data.get('data', {}).get('link')
+        elif debrid_name == "AllDebrid":
+            data = unrestricted_data.get('data', {})
+            result['download'] = data.get('link')
+            result['filename'] = data.get('filename')
+            result['filesize'] = data.get('filesize', 0)
             
-        return original_link
+        if not result['download']:
+            return None
+
+        return result
     except Exception as e:
         logger.error(f"Error al desrestringir el enlace {original_link} con {debrid_name}: {e}")
         return None
 
 
-async def _process_and_cache_links(results_data: list, config: dict, debrid_service):
-    """
-    Procesa en segundo plano los enlaces, los desrestringe y los guarda en caché.
-    """
-    valid_results = []
-    for link, data in results_data:
-        filesize_gb = data.get('filesize', 0) / (1024 ** 3)
-        if 'maxSize' in config and filesize_gb > int(config['maxSize']):
-            continue
-        if "selectedQualityExclusion" in config and data.get("quality") in config["selectedQualityExclusion"]:
-            continue
-        valid_results.append((link, data))
 
-    valid_results.sort(key=lambda x: x[1].get('filesize', 0), reverse=True)
+async def _process_single_link(debrid_service, link, config, db_calidad, db_audio, db_info):
+    data = {
+        'link': link,
+        'filesize': 0,
+        'quality': db_calidad or '', 
+        'nombre_fichero': '',
+        'db_calidad': db_calidad or '',
+        'db_audio': db_audio or '',
+        'db_info': db_info or ''
+    }
 
-    for link, data in valid_results:
-        file_name = data.get('nombre_fichero', 'unknown')
-        final_link = await _get_unrestricted_link(debrid_service, link, file_name)
-        if final_link:
-            entry = {
-                "config": config,
-                "link": link,
-                "final_link": final_link,
-                "filesize": data.get('filesize'),
-            }
-            encoded_link = encodeb64(link)
-            await redis_client.hset("final_links", encoded_link, json.dumps(entry))
-        await asyncio.sleep(0)
+    try:
+        unrestricted_info = await _get_unrestricted_link(debrid_service, link)
+        if unrestricted_info:
+            data['filesize'] = unrestricted_info.get('filesize', 0)
+            data['nombre_fichero'] = unrestricted_info.get('filename', '')
+            final_link = unrestricted_info.get('download')
+            
+            if data['nombre_fichero']:
+                data['quality'] = detect_quality(data['nombre_fichero']) or data['quality']
+                data['languages'] = detect_languages(data['nombre_fichero'])
+                data['quality_spec'] = detect_quality_spec(data['nombre_fichero'])
+            
+            if final_link:
+                entry = {
+                    "config": config,
+                    "link": link,
+                    "final_link": final_link,
+                    "filesize": data['filesize'],
+                }
+                encoded_link = encodeb64(link)
+                await redis_client.hset("final_links", encoded_link, json.dumps(entry))
+            
+            return (link, data, final_link) 
+    except Exception as e:
+        logger.error(f"Error processing {link}: {e}")
+    
+    return (link, data, None)
 
 
 @app.get("/{config_str}/stream/{stream_type}/{stream_id}")
@@ -309,8 +298,6 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     debrid_service = get_debrid_service(config, http_client, warp_client)
     debrid_name = type(debrid_service).__name__
 
-    fichier_status_rd = await redis_client.get(FICHIER_STATUS_KEY) or "up"
-
     if media.type == "movie":
         search_results = await search_movies(media.id)
     else:
@@ -321,7 +308,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         return {"streams": []}
 
     # Nuevo flujo: copiar primero para obtener filename, luego obtener info del archivo copiado
-    results_data = []
+    tasks = []
     for result in search_results:
         # Ahora search_results devuelve tuplas: (link, calidad, audio, info)
         if isinstance(result, tuple):
@@ -331,61 +318,22 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
             link = result
             db_calidad = db_audio = db_info = ""
         
-        data = {
-            'link': link, 
-            'filesize': 0, 
-            'quality': '',
-            'nombre_fichero': '',
-            'db_calidad': db_calidad or '',
-            'db_audio': db_audio or '',
-            'db_info': db_info or ''
-        }
-        
-        if '1fichier' in link:
-            # Intento 1: Copiar el archivo primero para obtener un enlace accesible
-            # Usamos http_client (sin proxy) para 1fichier
-            try:
-                copy_result = await copy_file(http_client, link)
-                if copy_result:
-                    from_url, to_url = copy_result
-                    # Intento 2: Obtener info del archivo copiado (ahora debería funcionar)
-                    filename, info_data, _ = await get_file_info(http_client, to_url)
-                    if info_data:
-                        data['filesize'] = info_data.get('size', 0)
-                        data['nombre_fichero'] = info_data.get('filename', filename or '')
-                        data['quality'] = detect_quality(data['nombre_fichero'])
-                        logger.info(f"Info obtenida tras copiar: {data['nombre_fichero']} - {data['quality']} - {data['filesize']} bytes")
-                    else:
-                        # Fallback a datos de BD si la API de info falla
-                        data['nombre_fichero'] = filename or ''
-                        if db_calidad:
-                            data['quality'] = db_calidad
-                            logger.info(f"Usando calidad de BD como fallback: {db_calidad}")
-                else:
-                    # Si la copia falla, intentar obtener info del enlace original como último recurso
-                    logger.warning(f"Copia fallida para {link}, intentando obtener info directa...")
-                    filename, info_data, _ = await get_file_info(http_client, link)
-                    if info_data:
-                        data['filesize'] = info_data.get('size', 0)
-                        data['nombre_fichero'] = info_data.get('filename', filename or '')
-                        data['quality'] = detect_quality(data['nombre_fichero'])
-                    elif db_calidad:
-                        # Último fallback: usar datos de BD
-                        data['quality'] = db_calidad
-                        data['nombre_fichero'] = filename or ''
-                        logger.info(f"Fallback a BD tras fallo total: calidad={db_calidad}")
-            except Exception as e:
-                logger.error(f"Error procesando enlace {link}: {e}")
-                # Fallback a BD en caso de excepción
-                if db_calidad:
-                    data['quality'] = db_calidad
-                    logger.info(f"Fallback a BD tras excepción: calidad={db_calidad}")
-        
+        tasks.append(_process_single_link(debrid_service, link, config, db_calidad, db_audio, db_info))
+
+    processed_results = await asyncio.gather(*tasks)
+    
+    results_data = []
+    
+    for link, data, final_link in processed_results:
+        filesize_gb = data.get('filesize', 0) / (1024 ** 3)
+        if 'maxSize' in config and filesize_gb > int(config['maxSize']):
+            continue
+        if "selectedQualityExclusion" in config and data.get("quality") in config["selectedQualityExclusion"]:
+            continue
+            
         results_data.append((link, data))
 
-    asyncio.create_task(
-        _process_and_cache_links(results_data, config, debrid_service)
-    )
+    results_data.sort(key=lambda x: x[1].get('filesize', 0), reverse=True)
 
     streams_unfiltered = []
     for link, data in results_data:
@@ -396,7 +344,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         streams_unfiltered.append(stream)
 
     streams = filter_items(streams_unfiltered, media, config=config)
-    parse_to_debrid_stream(streams, config, media, debrid_name, fichier_is_up=(fichier_status_rd == "up"))
+    parse_to_debrid_stream(streams, config, media, debrid_name)
 
     logger.info(f"Resultados encontrados. Tiempo total: {time.time() - start_time:.2f}s")
     return {"streams": streams}
@@ -424,7 +372,8 @@ async def _handle_playback(config_str: str, query: str, file_name) -> str:
     decoded_file_name = decodeb64(file_name)
     debrid_service = get_debrid_service(config, http_client, warp_client)
 
-    final_link = await _get_unrestricted_link(debrid_service, decoded_query, decoded_file_name)
+    unrestricted_info = await _get_unrestricted_link(debrid_service, decoded_query)
+    final_link = unrestricted_info.get('download') if unrestricted_info else None
 
     if final_link:
         logger.info(f"Enlace desrestringido. Tiempo total: {time.time() - start_time:.2f}s")
