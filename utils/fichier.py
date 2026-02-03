@@ -44,6 +44,7 @@ async def copy_file(http_client: httpx.AsyncClient, url: str, rename=None, _retr
     
     new_filename = rename[:rename.rfind('.')] + generate_guid() if rename else generate_guid()
     
+    logger.info(f"Intentando copiar URL: {url}")
     logger.debug(f"Nuevo nombre de archivo: {new_filename}")
     logger.debug(f"Usando clave API: {api_key[:10]}...{api_key[-4:]}")
     data = {"urls": [url], "rename": new_filename}
@@ -70,15 +71,10 @@ async def copy_file(http_client: httpx.AsyncClient, url: str, rename=None, _retr
         return None, None
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"Error HTTP {e.response.status_code} al copiar archivo: {e.response.text}")
-        if e.response.status_code == 403:
-            logger.error("Error 403 Forbidden: La clave API no tiene permisos para copiar. Verifica que:")
-            logger.error("  1. La clave sea válida")
-            logger.error("  2. La cuenta tenga créditos/saldo")
-            logger.error("  3. La cuenta no sea gratuita (necesita permisos de copia)")
+        logger.error(f"Error HTTP {e.response.status_code} al copiar archivo {url}: {e.response.text}")
         return None, None
     except httpx.RequestError as e:
-        logger.error(f"Excepción de red al copiar el archivo: {e}")
+        logger.error(f"Excepción de red al copiar el archivo {url}: {e}")
         return None, None
     except (KeyError, IndexError) as e:
         logger.error(f"Error al procesar la respuesta JSON de la API: {e}")
