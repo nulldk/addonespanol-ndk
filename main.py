@@ -350,6 +350,12 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     """
     Busca y devuelve los streams disponibles para un item (película o serie).
     """
+    if not IS_DB_READY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Servicio inicializando base de datos. Intente de nuevo en unos segundos."
+        )
+
     start_time = time.time()
     stream_id = stream_id.replace(".json", "")
     config = parse_config(config_str)
