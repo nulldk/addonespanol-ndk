@@ -26,16 +26,13 @@ def get_emoji(language):
     return emoji_dict.get(language, "🇪🇸")
 
 
-def parse_to_debrid_stream(stream_list: list, config, media, nombre_debrid, fichier_is_up: bool = True):
+def parse_to_debrid_stream(stream_list: list, config, media, nombre_debrid):
     updated_list = []
     for link in stream_list:
 
         addon_title = ""
         if nombre_debrid == "RealDebrid":
-            if "1fichier" in link.get('link', ''):
-                addon_title = "[RD+ ✅]" if fichier_is_up else "[RD Download 🔴]"
-            else:
-                addon_title = "[RD+ ✅]"
+            addon_title = "[RD+ ✅]"
         elif nombre_debrid == "AllDebrid":
             addon_title = "[AD+]"
 

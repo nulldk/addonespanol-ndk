@@ -3,7 +3,6 @@ from models.movie import Movie
 from models.series import Series
 from utils.logger import setup_logger
 from utils.bd import getMetadata
-from utils.fichier import get_file_info
 
 logger = setup_logger(__name__)
 

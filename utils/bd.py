@@ -2,7 +2,6 @@ import sqlite3
 import aiosqlite
 import httpx
 from contextlib import asynccontextmanager
-from utils.fichier import copy_file
 from utils.logger import setup_logger
 from config import DB_DECRYPTED_PATH, DB_ENCRYPTED_PATH
 import os
@@ -80,55 +79,6 @@ def add_flag(db_path=DB_ENCRYPTED_PATH):
     finally:
         conn.close()
 
-
-async def update_db_movies(url, new_link):
-    """
-    Actualiza la tabla 'enlaces_pelis' con el nuevo enlace y marca el FLAG como 1.
-
-    Args:
-        url (str): El enlace original que sirve como identificador.
-        new_link (str): El nuevo enlace modificado a guardar.
-    """
-    async with get_cursor() as cursor:
-        await cursor.execute("UPDATE enlaces_pelis SET enlace_modificado = ?, FLAG = 1 WHERE link = ?", (new_link, url))
-
-async def update_db_series(url, new_link):
-    """
-    Actualiza la tabla 'enlaces_series' con el nuevo enlace y marca el FLAG como 1.
-
-    Args:
-        url (str): El enlace original que sirve como identificador.
-        new_link (str): El nuevo enlace modificado a guardar.
-    """
-    async with get_cursor() as cursor:
-        await cursor.execute("UPDATE enlaces_series SET enlace_modificado = ?, FLAG = 1 WHERE link = ?", (new_link, url))
-
-async def getGood1fichierlink(http_client: httpx.AsyncClient, link, file_name):
-    """
-    Obtiene un enlace válido de 1fichier.
-    """
-    if "1fichier" not in link:
-        return link
-
-    async with get_cursor() as cursor:
-        for table in ("enlaces_pelis", "enlaces_series"):
-            await cursor.execute(f"SELECT FLAG, enlace_modificado FROM {table} WHERE link = ?", (link,))
-            row = await cursor.fetchone()
-            if row:
-                flag, enlace_modificado = row
-                if flag == 1 and enlace_modificado:
-                    return enlace_modificado
-                
-                result = await copy_file(http_client, link, file_name)
-                if result:
-                    from_url, to_url = result
-                    if table == "enlaces_pelis":
-                        await update_db_movies(from_url, to_url)
-                    else:
-                        await update_db_series(from_url, to_url)
-                    return to_url
-                break
-    return link
 
 async def search_movies(id):
     """
