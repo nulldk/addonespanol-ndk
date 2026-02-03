@@ -9,7 +9,6 @@ certifi
 charset-normalizer
 click
 cronsim
-dateutil
 fastapi
 h11
 httpcore
