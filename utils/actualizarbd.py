@@ -1,7 +1,7 @@
 import httpx
 import os
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.logger import setup_logger
 
 from config import (
@@ -19,9 +19,10 @@ ADDON_TIMESTAMP_FILE = os.path.join(WORKING_PATH,'addon_last_update.txt')
 ADDON_REPO_URL = "https://github.com/nulldk/addonespanol-ndk/commits/main.atom"
 
 def establecer_timestamp_arranque(tipo_contenido):
-    """Establece el timestamp de arranque a la hora actual."""
+    """Establece el timestamp de arranque a la hora actual (UTC)."""
     fichero_timestamp = CONTENIDO_TIMESTAMP_FILE if tipo_contenido == "CONTENIDO" else ADDON_TIMESTAMP_FILE
-    ahora = datetime.now().isoformat()
+    # Usar UTC explícitamente para evitar problemas de offset-naive vs offset-aware
+    ahora = datetime.now(timezone.utc).isoformat()
     with open(fichero_timestamp, 'w') as f:
         f.write(ahora)
     logger.info(f"Timestamp de arranque establecido para {tipo_contenido}: {ahora}")
@@ -37,12 +38,15 @@ async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
             hora_arranque_str = f.read().strip()
             try:
                 hora_arranque = datetime.fromisoformat(hora_arranque_str)
+                # Si el timestamp leído no tiene timezone, asumimos UTC
+                if hora_arranque.tzinfo is None:
+                    hora_arranque = hora_arranque.replace(tzinfo=timezone.utc)
             except ValueError:
                 hora_arranque = None
     
     if not hora_arranque:
         logger.warning(f"No se encontró timestamp de arranque para {tipo_contenido}. Estableciendo ahora...")
-        hora_arranque = datetime.now()
+        hora_arranque = datetime.now(timezone.utc)
         with open(fichero_timestamp, 'w') as f:
             f.write(hora_arranque.isoformat())
 
@@ -59,8 +63,13 @@ async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
             return False
 
         latest_remote_timestamp_str = latest_entry.find(f'{namespace}updated').text.strip()
+        # Convertir Z a +00:00 para compatibilidad con fromisoformat en versiones antiguas de Python
         latest_remote_timestamp = datetime.fromisoformat(latest_remote_timestamp_str.replace('Z', '+00:00'))
         
+        # Asegurar que ambos timestamps tengan zona horaria
+        if latest_remote_timestamp.tzinfo is None:
+            latest_remote_timestamp = latest_remote_timestamp.replace(tzinfo=timezone.utc)
+            
     except Exception as e:
         logger.error(f"No se pudo comprobar la actualización para {tipo_contenido}: {e}")
         return False
