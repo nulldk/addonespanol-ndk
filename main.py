@@ -25,7 +25,7 @@ from utils.bd import (setup_index, getGood1fichierlink,
                       search_movies, search_tv_shows)
 from utils.cargarbd import check_and_download
 from utils.detection import detect_quality, post_process_results
-from utils.fichier import get_file_info
+from utils.fichier import get_file_info, copy_file
 from utils.filter_results import filter_items
 from utils.logger import setup_logger
 from utils.parse_config import parse_config
@@ -319,24 +319,66 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         logger.info(f"No se encontraron resultados para {media.type} {stream_id}. Tiempo total: {time.time() - start_time:.2f}s")
         return {"streams": []}
 
-    tasks = [get_file_info(warp_client, link) for link in search_results if '1fichier' in link]
-    file_infos = await asyncio.gather(*tasks, return_exceptions=True)
-
-    info_map = {info[2]: info for info in file_infos if not isinstance(info, BaseException)}
-
+    # Nuevo flujo: copiar primero para obtener filename, luego obtener info del archivo copiado
     results_data = []
-    for link in search_results:
-        data = {'link': link, 'filesize': 0, 'quality': ''}
+    for result in search_results:
+        # Ahora search_results devuelve tuplas: (link, calidad, audio, info)
+        if isinstance(result, tuple):
+            link, db_calidad, db_audio, db_info = result
+        else:
+            # Fallback por si acaso
+            link = result
+            db_calidad = db_audio = db_info = ""
+        
+        data = {
+            'link': link, 
+            'filesize': 0, 
+            'quality': '',
+            'nombre_fichero': '',
+            'db_calidad': db_calidad or '',
+            'db_audio': db_audio or '',
+            'db_info': db_info or ''
+        }
+        
         if '1fichier' in link:
-            info_result = info_map.get(link)
-            if info_result:
-                _, info_data, _ = info_result
-                if info_data:
-                    data['filesize'] = info_data.get('size', 0)
-                    data['nombre_fichero'] = info_data.get('filename', '')
-                    data['quality'] = detect_quality(data['nombre_fichero'])
-            else:
-                logger.warning(f"No se pudo obtener información de 1fichier para: {link}")
+            # Intento 1: Copiar el archivo primero para obtener un enlace accesible
+            try:
+                copy_result = await copy_file(warp_client, link)
+                if copy_result:
+                    from_url, to_url = copy_result
+                    # Intento 2: Obtener info del archivo copiado (ahora debería funcionar)
+                    filename, info_data, _ = await get_file_info(warp_client, to_url)
+                    if info_data:
+                        data['filesize'] = info_data.get('size', 0)
+                        data['nombre_fichero'] = info_data.get('filename', filename or '')
+                        data['quality'] = detect_quality(data['nombre_fichero'])
+                        logger.info(f"Info obtenida tras copiar: {data['nombre_fichero']} - {data['quality']} - {data['filesize']} bytes")
+                    else:
+                        # Fallback a datos de BD si la API de info falla
+                        data['nombre_fichero'] = filename or ''
+                        if db_calidad:
+                            data['quality'] = db_calidad
+                            logger.info(f"Usando calidad de BD como fallback: {db_calidad}")
+                else:
+                    # Si la copia falla, intentar obtener info del enlace original como último recurso
+                    logger.warning(f"Copia fallida para {link}, intentando obtener info directa...")
+                    filename, info_data, _ = await get_file_info(warp_client, link)
+                    if info_data:
+                        data['filesize'] = info_data.get('size', 0)
+                        data['nombre_fichero'] = info_data.get('filename', filename or '')
+                        data['quality'] = detect_quality(data['nombre_fichero'])
+                    elif db_calidad:
+                        # Último fallback: usar datos de BD
+                        data['quality'] = db_calidad
+                        data['nombre_fichero'] = filename or ''
+                        logger.info(f"Fallback a BD tras fallo total: calidad={db_calidad}")
+            except Exception as e:
+                logger.error(f"Error procesando enlace {link}: {e}")
+                # Fallback a BD en caso de excepción
+                if db_calidad:
+                    data['quality'] = db_calidad
+                    logger.info(f"Fallback a BD tras excepción: calidad={db_calidad}")
+        
         results_data.append((link, data))
 
     asyncio.create_task(
