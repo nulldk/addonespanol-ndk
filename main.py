@@ -20,7 +20,7 @@ from starlette import status
 
 from debrid.get_debrid_service import get_debrid_service
 from metadata.tmdb import TMDB
-from utils.actualizarbd import comprobar_actualizacion_contenido, comprobar_actualizacion_addon
+from utils.actualizarbd import comprobar_actualizacion_contenido, comprobar_actualizacion_addon, establecer_timestamp_arranque
 from utils.bd import (setup_index, getGood1fichierlink,
                       search_movies, search_tv_shows)
 from utils.cargarbd import check_and_download
@@ -118,10 +118,10 @@ async def lifespan(app: FastAPI):
     await redis_client.set(FICHIER_STATUS_KEY, "up")
     logger.info(f"Estado inicial de 1fichier establecido a 'up' por defecto.")
 
-    logger.info("Estableciendo versión inicial de los componentes...")
-    await comprobar_actualizacion_contenido()
-    await comprobar_actualizacion_addon()
-    logger.info("Ficheros de versión inicializados.")
+    logger.info("Estableciendo timestamps de arranque...")
+    establecer_timestamp_arranque("CONTENIDO")
+    establecer_timestamp_arranque("ADDON")
+    logger.info("Timestamps de arranque establecidos.")
 
     logger.info("Descargando base de datos...")
     if check_and_download():
@@ -473,28 +473,23 @@ async def trigger_render_restart():
 async def actualizar_bd():
     """
     Tarea programada que comprueba si hay nuevas versiones y reinicia el servicio si es necesario.
+    Compara el timestamp del último commit remoto con la hora de arranque del servidor.
     """
-    # NO actualizamos el fichero de timestamp aquí, solo comprobamos.
-    # El fichero se actualizará en el arranque (lifespan) tras el reinicio exitoso.
-    contenido_actualizado = await comprobar_actualizacion_contenido(write_on_update=False)
-    addon_actualizado = await comprobar_actualizacion_addon(write_on_update=False)
+    contenido_actualizado = await comprobar_actualizacion_contenido()
+    addon_actualizado = await comprobar_actualizacion_addon()
 
-    # Si se detecta cualquier actualización, se reinicia el servicio
     if contenido_actualizado or addon_actualizado:
         if contenido_actualizado:
-            logger.info("Tarea programada: Nueva versión de CONTENIDO detectada.")
+            logger.info("Tarea programada: Nueva versión de CONTENIDO detectada (commit posterior al arranque).")
         if addon_actualizado:
-            logger.info("Tarea programada: Nueva versión de ADDON detectada.")
+            logger.info("Tarea programada: Nueva versión de ADDON detectada (commit posterior al arranque).")
         
         logger.info("Iniciando secuencia de reinicio...")
         
-        # Intentar reinicio vía Render API si está disponible
         if RENDER_API_URL:
             if await trigger_render_restart():
                 return
 
-        # Fallback: Reinicio forzado del contenedor/proceso
-        # Esto hará que Docker/K8s/Supervisor reinicie el servicio
         logger.warning("Render API no disponible o falló. Ejecutando sys.exit(1) para forzar reinicio.")
         sys.exit(1)
 

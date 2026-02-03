@@ -1,6 +1,7 @@
 import httpx
 import os
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from utils.logger import setup_logger
 
 from config import (
@@ -17,14 +18,33 @@ CONTENIDO_TIMESTAMP_FILE = os.path.join(WORKING_PATH,'contenido_last_update.txt'
 ADDON_TIMESTAMP_FILE = os.path.join(WORKING_PATH,'addon_last_update.txt')
 ADDON_REPO_URL = "https://github.com/nulldk/addonespanol-ndk/commits/main.atom"
 
-async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido, write_on_update=True):
-    """Función genérica para comprobar un repositorio y su fichero de timestamp."""
+def establecer_timestamp_arranque(tipo_contenido):
+    """Establece el timestamp de arranque a la hora actual."""
+    fichero_timestamp = CONTENIDO_TIMESTAMP_FILE if tipo_contenido == "CONTENIDO" else ADDON_TIMESTAMP_FILE
+    ahora = datetime.now().isoformat()
+    with open(fichero_timestamp, 'w') as f:
+        f.write(ahora)
+    logger.info(f"Timestamp de arranque establecido para {tipo_contenido}: {ahora}")
+    return ahora
+
+async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
+    """Compara el timestamp del último commit remoto con la hora de arranque local."""
     logger.info(f"Comprobando actualizaciones del {tipo_contenido}...")
     
-    last_local_timestamp = ""
+    hora_arranque = None
     if os.path.exists(fichero_timestamp):
         with open(fichero_timestamp, 'r') as f:
-            last_local_timestamp = f.read().strip()
+            hora_arranque_str = f.read().strip()
+            try:
+                hora_arranque = datetime.fromisoformat(hora_arranque_str)
+            except ValueError:
+                hora_arranque = None
+    
+    if not hora_arranque:
+        logger.warning(f"No se encontró timestamp de arranque para {tipo_contenido}. Estableciendo ahora...")
+        hora_arranque = datetime.now()
+        with open(fichero_timestamp, 'w') as f:
+            f.write(hora_arranque.isoformat())
 
     try:
         async with httpx.AsyncClient() as client:
@@ -38,28 +58,24 @@ async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido, write_o
             logger.warning(f"No se encontró 'entry' en el feed de commits para {tipo_contenido}.")
             return False
 
-        latest_remote_timestamp = latest_entry.find(f'{namespace}updated').text.strip()
+        latest_remote_timestamp_str = latest_entry.find(f'{namespace}updated').text.strip()
+        latest_remote_timestamp = datetime.fromisoformat(latest_remote_timestamp_str.replace('Z', '+00:00'))
         
     except Exception as e:
         logger.error(f"No se pudo comprobar la actualización para {tipo_contenido}: {e}")
         return False
 
-    logger.info(f"Versión local {tipo_contenido}: {last_local_timestamp or 'Ninguna'}")
-    logger.info(f"Versión remota {tipo_contenido}: {latest_remote_timestamp}")
+    logger.info(f"Hora de arranque {tipo_contenido}: {hora_arranque}")
+    logger.info(f"Último commit remoto {tipo_contenido}: {latest_remote_timestamp}")
 
-    if latest_remote_timestamp != last_local_timestamp:
-        logger.info(f"¡Nueva actualización de {tipo_contenido} detectada!")
-        if write_on_update:
-            with open(fichero_timestamp, 'w') as f:
-                f.write(latest_remote_timestamp)
+    if latest_remote_timestamp > hora_arranque:
+        logger.info(f"¡Nueva actualización de {tipo_contenido} detectada! (commit posterior al arranque)")
         return True
     
     return False
 
-async def comprobar_actualizacion_contenido(write_on_update=True):
-    """Comprueba si hay actualizaciones en el repositorio de contenido."""
-    return await _comprobar_remoto(CONTENIDO_REPO_URL, CONTENIDO_TIMESTAMP_FILE, "CONTENIDO", write_on_update)
+async def comprobar_actualizacion_contenido():
+    return await _comprobar_remoto(CONTENIDO_REPO_URL, CONTENIDO_TIMESTAMP_FILE, "CONTENIDO")
 
-async def comprobar_actualizacion_addon(write_on_update=True):
-    """Comprueba si hay actualizaciones en el repositorio del código del addon."""
-    return await _comprobar_remoto(ADDON_REPO_URL, ADDON_TIMESTAMP_FILE, "ADDON", write_on_update)
+async def comprobar_actualizacion_addon():
+    return await _comprobar_remoto(ADDON_REPO_URL, ADDON_TIMESTAMP_FILE, "ADDON")
