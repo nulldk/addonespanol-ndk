@@ -40,6 +40,7 @@ def setup_index(db_path=DB_DECRYPTED_PATH):
     try:        
         # --- Creación de Índices para acelerar búsquedas ---
         logger.info("Creando índices para mejorar el rendimiento de las búsquedas...")
+        cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enlaces_pelis_tmdb ON enlaces_pelis(tmdb);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enlaces_pelis_link ON enlaces_pelis(link);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enlaces_series_tmdb_season_episode ON enlaces_series(tmdb, temporada, episodio);")
