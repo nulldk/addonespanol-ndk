@@ -365,7 +365,9 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
                 }, ttl=3600) # Cache por 1 hora
 
             # Devolvemos el link final para este usuario (aunque en get_results no se usa para generar la lista)
-            return (link, data, final_link_user) 
+            return (link, data, final_link_user)
+        else:
+            logger.debug(f"Fallo al desrestringir enlace: {link}") 
     except Exception as e:
         logger.error(f"Error processing {link}: {e}")
     
@@ -431,9 +433,16 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     
     # is_valid es el tercer valor devuelto por _process_single_link (puede ser el link final o True)
     for link, data, is_valid in processed_results:
+        # Si ya está en cache, is_valid es True.
+        # Si NO está en cache, is_valid es el final_link (cadena o None).
+        
+        # Validamos si es válido (o tiene contenido)
         if not is_valid:
             continue
-
+            
+        # IMPORTANTE: Si es válido (sea True o link), lo añadimos
+        # Antes el filtro era implícito porque final_link era string
+        
         filesize_gb = data.get('filesize', 0) / (1024 ** 3)
         if 'maxSize' in config and filesize_gb > int(config['maxSize']):
             continue
