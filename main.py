@@ -215,7 +215,7 @@ async def configure(request: Request):
         "isCommunityVersion": IS_COMMUNITY_VERSION,
         "version": VERSION
     }
-    return templates.TemplateResponse("index.html", context)
+    return templates.TemplateResponse(request, "index.html", context)
 
 
 @app.get("/static/{file_path:path}", include_in_schema=False)
