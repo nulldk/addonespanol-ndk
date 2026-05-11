@@ -6,6 +6,9 @@ function loadData() {
         data = JSON.parse(data);
         document.getElementById('debrid-api').value = data.debridKey;
         document.getElementById('debrid-http').value = data.debridHttp;
+        if(data.fichierApiKey) {
+            document.getElementById('fichier-api').value = data.fichierApiKey;
+        }
         document.getElementById('tmdb-api').value = data.tmdbApi;
         document.getElementById('service').value = data.service;
         if(data.maxSize) {
@@ -26,6 +29,7 @@ function getLink(method) {
     const addonHost = new URL(window.location.href).protocol.replace(':', '') + "://" + new URL(window.location.href).host;
     const debridApi = document.getElementById('debrid-api').value;
     const debridHttp = document.getElementById('debrid-http').value;
+    const fichierApiKey = document.getElementById('fichier-api').value;
     const tmdbApi = document.getElementById('tmdb-api').value;
     const service = document.getElementById('service').value;
     const maxSize = document.getElementById('maxSize').value;
@@ -43,6 +47,7 @@ function getLink(method) {
         service,
         debridKey: debridApi,
         debridHttp: debridHttp,
+        fichierApiKey,
         debrid: 'true',
         metadataProvider: 'cinemeta',
         tmdbApi,

@@ -1,7 +1,10 @@
 from debrid.base_debrid import BaseDebrid
 from utils.logger import setup_logger
 import httpx
+import os
 import re
+import secrets
+import string
 from urllib.parse import unquote, urljoin
 
 logger = setup_logger(__name__)
@@ -15,8 +18,80 @@ class RealDebrid(BaseDebrid):
 
     async def unrestrict_link(self, link):
         url = f"{self.base_url}/rest/1.0/unrestrict/link"
-        data = {"link": link}
+        link_to_unrestrict = await self._prepare_1fichier_link(link)
+        data = {"link": link_to_unrestrict}
         return await self.get_json_response(url, method='post', headers=self.headers, data=data, client=self.warp_client)
+
+    async def _prepare_1fichier_link(self, link):
+        if "1fichier.com" not in link.lower():
+            return link
+
+        fichier_api_key = self.config.get("fichierApiKey") or os.getenv("FICHIER_API_KEY")
+        if not fichier_api_key:
+            self.logger.warning("Enlace 1fichier detectado, pero no hay fichierApiKey configurada. Se enviará el enlace original a Real-Debrid.")
+            return link
+
+        copied_url = await self._copy_1fichier_link(link, fichier_api_key)
+        if not copied_url:
+            self.logger.warning("No se pudo copiar el enlace de 1fichier. Se enviará el enlace original a Real-Debrid.")
+            return link
+
+        random_filename = self._random_filename()
+        updated_url = await self._rename_1fichier_link(copied_url, random_filename, fichier_api_key)
+        if not updated_url:
+            self.logger.warning("No se pudo renombrar la copia de 1fichier. Se enviará la copia sin renombrar a Real-Debrid.")
+            return copied_url
+
+        return updated_url
+
+    async def _copy_1fichier_link(self, link, api_key):
+        payload = {"urls": [link]}
+        response = await self._post_1fichier("cp.cgi", payload, api_key)
+        if not response or response.get("status") != "OK":
+            self.logger.warning(f"Respuesta inválida al copiar en 1fichier: {response}")
+            return None
+
+        copied_urls = response.get("urls") or []
+        if not copied_urls:
+            return None
+
+        return copied_urls[0].get("to_url")
+
+    async def _rename_1fichier_link(self, link, filename, api_key):
+        payload = {
+            "urls": [link],
+            "filename": filename
+        }
+        response = await self._post_1fichier("chattr.cgi", payload, api_key)
+        if not response or response.get("status") != "OK":
+            self.logger.warning(f"Respuesta inválida al cambiar atributos en 1fichier: {response}")
+            return None
+
+        updated_urls = response.get("urls") or []
+        if updated_urls:
+            return updated_urls[0]
+
+        return link if response.get("updated", 0) > 0 else None
+
+    async def _post_1fichier(self, endpoint, payload, api_key):
+        url = f"https://api.1fichier.com/v1/file/{endpoint}"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        try:
+            response = await self.http_client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"1fichier {endpoint} falló con status {e.response.status_code}: {e.response.text}")
+            return None
+        except httpx.RequestError as e:
+            self.logger.error(f"Error llamando a 1fichier {endpoint}: {e}")
+            return None
+        except ValueError:
+            self.logger.error(f"1fichier {endpoint} devolvió una respuesta no JSON: {response.text}")
+            return None
+
+    def _random_filename(self, length=16):
+        return ''.join(secrets.choice(string.ascii_letters) for _ in range(length))
 
     async def find_link_in_folder(self, http_folder_url, filename):
         """
