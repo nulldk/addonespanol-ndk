@@ -343,13 +343,17 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
             # Nota: final_link es específico del usuario actual, NO lo cacheamos
             final_link_user = unrestricted_info.get('download')
 
-            metadata_source = " ".join(filter(None, [db_calidad, db_audio, db_info]))
+            uses_prepared_1fichier = (
+                type(debrid_service).__name__ == "RealDebrid"
+                and "1fichier.com" in link.lower()
+            )
+            metadata_source = " ".join(filter(None, [db_calidad, db_audio, db_info])) if uses_prepared_1fichier else ""
 
             detected_quality = detect_quality(metadata_source) if metadata_source else None
-            
+
             if not detected_quality and data['nombre_fichero']:
                 detected_quality = detect_quality(data['nombre_fichero'])
-            
+
             if not detected_quality:
                 detected_quality = detect_quality(data['quality'])
 
@@ -359,7 +363,7 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
             if metadata_for_detection:
                 data['languages'] = detect_languages(metadata_for_detection)
                 data['quality_spec'] = detect_quality_spec(metadata_for_detection)
-            
+
             # Guardamos SOLO los metadatos en el caché global
             if data['nombre_fichero'] and data['filesize'] > 0:
                 cache.set(link, {
