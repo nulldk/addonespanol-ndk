@@ -1,20 +1,28 @@
 from debrid.base_debrid import BaseDebrid
+from utils.cache import cache
 from utils.logger import setup_logger
+import asyncio
+import hashlib
 import httpx
 import os
+import random
 import re
-import secrets
 import string
 from urllib.parse import unquote, urljoin
 
 logger = setup_logger(__name__)
+FICHIER_PREPARED_LINK_TTL = 24 * 60 * 60
+FICHIER_PREPARED_INFLIGHT = {}
+FOLDER_HREF_REGEX = re.compile(r'<a href="([^"]+)">[^<]*<\/a>')
 
 class RealDebrid(BaseDebrid):
     def __init__(self, config, http_client: httpx.AsyncClient, warp_client: httpx.AsyncClient = None):
         super().__init__(config, http_client)
         self.warp_client = warp_client
         self.base_url = "https://api.real-debrid.com"
-        self.headers = {"Authorization": f"Bearer {self.config['debridKey']}"}
+        self.headers = {"Authorization": f"Bearer {self.config['debridKey'].strip()}"}
+        self._folder_hrefs_cache = {}
+        self._folder_hrefs_inflight = {}
 
     async def unrestrict_link(self, link):
         url = f"{self.base_url}/rest/1.0/unrestrict/link"
@@ -26,26 +34,53 @@ class RealDebrid(BaseDebrid):
         if "1fichier.com" not in link.lower():
             return link
 
-        fichier_api_key = self.config.get("fichierApiKey") or os.getenv("FICHIER_API_KEY")
+        fichier_api_key = (self.config.get("fichierApiKey") or os.getenv("FICHIER_API_KEY") or "").strip()
         if not fichier_api_key:
             self.logger.warning("Enlace 1fichier detectado, pero no hay fichierApiKey configurada. Se enviará el enlace original a Real-Debrid.")
             return link
+
+        cache_key = self._fichier_cache_key(link, fichier_api_key)
+        cached_link = cache.get(cache_key)
+        if cached_link:
+            return cached_link
+
+        inflight_task = FICHIER_PREPARED_INFLIGHT.get(cache_key)
+        if inflight_task:
+            return await inflight_task
+
+        task = asyncio.create_task(self._create_prepared_1fichier_link(link, fichier_api_key, cache_key))
+        FICHIER_PREPARED_INFLIGHT[cache_key] = task
+        try:
+            return await task
+        finally:
+            if FICHIER_PREPARED_INFLIGHT.get(cache_key) is task:
+                del FICHIER_PREPARED_INFLIGHT[cache_key]
+
+    async def _create_prepared_1fichier_link(self, link, fichier_api_key, cache_key):
+        random_filename = self._random_filename()
+        copied_url = await self._copy_1fichier_link(link, fichier_api_key, rename=random_filename)
+        if copied_url:
+            cache.set(cache_key, copied_url, ttl=FICHIER_PREPARED_LINK_TTL)
+            return copied_url
 
         copied_url = await self._copy_1fichier_link(link, fichier_api_key)
         if not copied_url:
             self.logger.warning("No se pudo copiar el enlace de 1fichier. Se enviará el enlace original a Real-Debrid.")
             return link
 
-        random_filename = self._random_filename()
         updated_url = await self._rename_1fichier_link(copied_url, random_filename, fichier_api_key)
         if not updated_url:
             self.logger.warning("No se pudo renombrar la copia de 1fichier. Se enviará la copia sin renombrar a Real-Debrid.")
             return copied_url
 
+        cache.set(cache_key, updated_url, ttl=FICHIER_PREPARED_LINK_TTL)
         return updated_url
 
-    async def _copy_1fichier_link(self, link, api_key):
+    async def _copy_1fichier_link(self, link, api_key, rename=None):
         payload = {"urls": [link]}
+        if rename:
+            payload["rename"] = rename
+
         response = await self._post_1fichier("cp.cgi", payload, api_key)
         if not response or response.get("status") != "OK":
             self.logger.warning(f"Respuesta inválida al copiar en 1fichier: {response}")
@@ -91,7 +126,11 @@ class RealDebrid(BaseDebrid):
             return None
 
     def _random_filename(self, length=16):
-        return ''.join(secrets.choice(string.ascii_letters) for _ in range(length))
+        return ''.join(random.choices(string.ascii_letters, k=length))
+
+    def _fichier_cache_key(self, link, api_key):
+        key_hash = hashlib.sha256(f"{api_key}:{link}".encode("utf-8")).hexdigest()
+        return f"realdebrid:1fichier:prepared:{key_hash}"
 
     async def find_link_in_folder(self, http_folder_url, filename):
         """
@@ -118,28 +157,17 @@ class RealDebrid(BaseDebrid):
             
 
         try:
-            response = await self.http_client.get(links_folder_url, follow_redirects=True)
-            response.raise_for_status()
-            html_content = response.text
-            
-            hrefs = re.findall(r'<a href="([^"]+)">[^<]*<\/a>', html_content)
+            had_cached_folder = links_folder_url in self._folder_hrefs_cache
+            hrefs = await self._get_folder_hrefs(links_folder_url)
+            full_link_url = self._find_folder_link_by_id(links_folder_url, hrefs, api_id)
+            if full_link_url:
+                self.logger.info(f"✅ Coincidencia por ID único encontrada! URL: {full_link_url}")
+                return full_link_url
 
-            for href in hrefs:
-                if "Parent Directory" in href or href == "../":
-                    continue
-                
-                decoded_href = unquote(href)
-                
-                # 2. Extraer el ID del nombre del archivo en el href
-                try:
-                    href_id_start_index = decoded_href.rfind(')') + 1
-                    href_id = decoded_href[href_id_start_index:] if href_id_start_index > 0 else None
-                except:
-                    href_id = None
-                
-                # 3. Comparar los IDs
-                if href_id and api_id == href_id:
-                    full_link_url = urljoin(links_folder_url, href)
+            if had_cached_folder:
+                hrefs = await self._get_folder_hrefs(links_folder_url, force_refresh=True)
+                full_link_url = self._find_folder_link_by_id(links_folder_url, hrefs, api_id)
+                if full_link_url:
                     self.logger.info(f"✅ Coincidencia por ID único encontrada! URL: {full_link_url}")
                     return full_link_url
 
@@ -149,3 +177,44 @@ class RealDebrid(BaseDebrid):
         except Exception as e:
             self.logger.error(f"Error al buscar en la carpeta de Real-Debrid {links_folder_url}: {e}")
             return None
+
+    async def _get_folder_hrefs(self, links_folder_url, force_refresh=False):
+        if not force_refresh and links_folder_url in self._folder_hrefs_cache:
+            return self._folder_hrefs_cache[links_folder_url]
+
+        inflight_task = self._folder_hrefs_inflight.get(links_folder_url)
+        if inflight_task:
+            return await inflight_task
+
+        task = asyncio.create_task(self._fetch_folder_hrefs(links_folder_url))
+        self._folder_hrefs_inflight[links_folder_url] = task
+        try:
+            hrefs = await task
+            self._folder_hrefs_cache[links_folder_url] = hrefs
+            return hrefs
+        finally:
+            if self._folder_hrefs_inflight.get(links_folder_url) is task:
+                del self._folder_hrefs_inflight[links_folder_url]
+
+    async def _fetch_folder_hrefs(self, links_folder_url):
+        response = await self.http_client.get(links_folder_url, follow_redirects=True)
+        response.raise_for_status()
+        return FOLDER_HREF_REGEX.findall(response.text)
+
+    def _find_folder_link_by_id(self, links_folder_url, hrefs, api_id):
+        for href in hrefs:
+            if "Parent Directory" in href or href == "../":
+                continue
+
+            decoded_href = unquote(href)
+
+            try:
+                href_id_start_index = decoded_href.rfind(')') + 1
+                href_id = decoded_href[href_id_start_index:] if href_id_start_index > 0 else None
+            except:
+                href_id = None
+
+            if href_id and api_id == href_id:
+                return urljoin(links_folder_url, href)
+
+        return None

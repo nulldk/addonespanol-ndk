@@ -5,9 +5,11 @@ from contextlib import asynccontextmanager
 from utils.logger import setup_logger
 from config import DB_DECRYPTED_PATH, DB_ENCRYPTED_PATH
 import os
+from utils.cache import cache
 
 
 logger = setup_logger(__name__)
+SEARCH_CACHE_TTL = 5 * 60
 
 
 @asynccontextmanager
@@ -91,10 +93,17 @@ async def search_movies(id):
     Returns:
         list: Una lista de tuplas (link, calidad, audio, info) asociados a la película.
     """
+    cache_key = _search_cache_key("movie", id)
+    cached_results = cache.get(cache_key)
+    if cached_results is not None:
+        return cached_results
+
     async with get_cursor() as cursor:
         await cursor.execute("SELECT link, calidad, audio, info FROM enlaces_pelis WHERE tmdb = ?", (id,))
         rows = await cursor.fetchall()
-        return [(row[0], row[1], row[2], row[3]) for row in rows]
+        results = [(row[0], row[1], row[2], row[3]) for row in rows]
+        cache.set(cache_key, results, ttl=SEARCH_CACHE_TTL)
+        return results
 
 async def search_tv_shows(id, season, episode):
     """
@@ -108,13 +117,29 @@ async def search_tv_shows(id, season, episode):
     Returns:
         list: Una lista de tuplas (link, calidad, audio, info) asociados al episodio.
     """
+    cache_key = _search_cache_key("series", id, season, episode)
+    cached_results = cache.get(cache_key)
+    if cached_results is not None:
+        return cached_results
+
     async with get_cursor() as cursor:
         await cursor.execute(
             "SELECT link, calidad, audio, info FROM enlaces_series WHERE tmdb = ? AND temporada = ? AND episodio = ?",
             (id, season, episode)
         )
         rows = await cursor.fetchall()
-        return [(row[0], row[1], row[2], row[3]) for row in rows]
+        results = [(row[0], row[1], row[2], row[3]) for row in rows]
+        cache.set(cache_key, results, ttl=SEARCH_CACHE_TTL)
+        return results
+
+def _search_cache_key(media_type, *parts):
+    return f"bd:search:{media_type}:{_db_version()}:{':'.join(str(part) for part in parts)}"
+
+def _db_version():
+    try:
+        return os.stat(DB_DECRYPTED_PATH).st_mtime_ns
+    except OSError:
+        return 0
 
 def getMetadata(link, media_type):
     """

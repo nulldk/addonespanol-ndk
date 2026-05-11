@@ -1,7 +1,11 @@
+import hashlib
 import httpx
 from metadata.metadata_provider_base import MetadataProvider
 from models.movie import Movie
 from models.series import Series
+from utils.cache import cache
+
+TMDB_METADATA_TTL = 24 * 60 * 60
 
 class TMDB(MetadataProvider):
     def __init__(self, config, http_client: httpx.AsyncClient):
@@ -22,6 +26,10 @@ class TMDB(MetadataProvider):
 
     async def get_metadata(self, id, media_type):
         self.logger.info("Getting metadata for " + media_type + " with id " + id)
+        cache_key = self._metadata_cache_key(id, media_type)
+        cached_metadata = cache.get(cache_key)
+        if cached_metadata:
+            return cached_metadata
 
         full_id = id.split(":")
         self.logger.debug("Full id: " + str(full_id))
@@ -101,8 +109,13 @@ class TMDB(MetadataProvider):
                     )
         
         if result:
+            cache.set(cache_key, result, ttl=TMDB_METADATA_TTL)
             self.logger.info("Got metadata for " + media_type + " with id " + id)
         else:
             self.logger.warning("Could not find metadata for " + media_type + " with id " + id)
 
         return result
+
+    def _metadata_cache_key(self, id, media_type):
+        key_hash = hashlib.sha256(f"{self.config.get('tmdbApi')}:{media_type}:{id}".encode("utf-8")).hexdigest()
+        return f"tmdb:metadata:{key_hash}"
