@@ -342,17 +342,23 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
             data['nombre_fichero'] = unrestricted_info.get('filename', '')
             # Nota: final_link es específico del usuario actual, NO lo cacheamos
             final_link_user = unrestricted_info.get('download')
+
+            metadata_source = " ".join(filter(None, [db_calidad, db_audio, db_info]))
+
+            detected_quality = detect_quality(metadata_source) if metadata_source else None
             
-            detected_quality = detect_quality(data['nombre_fichero']) if data['nombre_fichero'] else None
+            if not detected_quality and data['nombre_fichero']:
+                detected_quality = detect_quality(data['nombre_fichero'])
             
             if not detected_quality:
                 detected_quality = detect_quality(data['quality'])
 
             data['quality'] = detected_quality or data['quality']
 
-            if data['nombre_fichero']:
-                data['languages'] = detect_languages(data['nombre_fichero'])
-                data['quality_spec'] = detect_quality_spec(data['nombre_fichero'])
+            metadata_for_detection = metadata_source or data['nombre_fichero']
+            if metadata_for_detection:
+                data['languages'] = detect_languages(metadata_for_detection)
+                data['quality_spec'] = detect_quality_spec(metadata_for_detection)
             
             # Guardamos SOLO los metadatos en el caché global
             if data['nombre_fichero'] and data['filesize'] > 0:
