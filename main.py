@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -60,6 +61,7 @@ warp_client = httpx.AsyncClient(timeout=30, proxy=WARP_PROXY_URL)
 
 
 FICHIER_STATUS_KEY = "rd_1fichier_status"
+STREAM_RESPONSE_TTL = 5 * 60
 
 async def check_real_debrid_1fichier_availability():
     if not DEBRID_API_KEY:
@@ -302,9 +304,29 @@ async def _get_unrestricted_link(debrid_service, original_link: str) -> dict | N
         return None
 
 
+def _stream_response_cache_key(config_str: str, stream_type: str, stream_id: str, fichier_status: str) -> str:
+    try:
+        db_version = os.stat(DB_DECRYPTED_PATH).st_mtime_ns
+    except OSError:
+        db_version = 0
+
+    key_hash = hashlib.sha256(
+        f"{config_str}:{stream_type}:{stream_id}:{fichier_status}:{db_version}".encode("utf-8")
+    ).hexdigest()
+    return f"stream:response:{key_hash}"
 
 
-async def _process_single_link(debrid_service, link, config, db_calidad, db_audio, db_info):
+
+async def _process_single_link(
+    debrid_service,
+    link,
+    config,
+    db_calidad,
+    db_audio,
+    db_info,
+    db_metadata_text=None,
+    unrestrict_task_cache=None
+):
     # 1. Intentar recuperar metadatos del caché global (independiente del usuario)
     cached_metadata = cache.get(link)
     
@@ -318,6 +340,7 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
             'db_calidad': db_calidad or '',
             'db_audio': db_audio or '',
             'db_info': db_info or '',
+            'metadata_filename': db_metadata_text,
             'languages': cached_metadata.get('languages'),
             'quality_spec': cached_metadata.get('quality_spec')
         }
@@ -332,11 +355,20 @@ async def _process_single_link(debrid_service, link, config, db_calidad, db_audi
         'nombre_fichero': '',
         'db_calidad': db_calidad or '',
         'db_audio': db_audio or '',
-        'db_info': db_info or ''
+        'db_info': db_info or '',
+        'metadata_filename': db_metadata_text
     }
 
     try:
-        unrestricted_info = await _get_unrestricted_link(debrid_service, link)
+        if unrestrict_task_cache is not None:
+            unrestricted_task = unrestrict_task_cache.get(link)
+            if not unrestricted_task:
+                unrestricted_task = asyncio.create_task(_get_unrestricted_link(debrid_service, link))
+                unrestrict_task_cache[link] = unrestricted_task
+            unrestricted_info = await unrestricted_task
+        else:
+            unrestricted_info = await _get_unrestricted_link(debrid_service, link)
+
         if unrestricted_info:
             data['filesize'] = unrestricted_info.get('filesize', 0)
             data['nombre_fichero'] = unrestricted_info.get('filename', '')
@@ -405,6 +437,14 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     stream_id = stream_id.replace(".json", "")
     config = parse_config(config_str)
 
+    # Recuperamos estado de 1fichier del cache
+    fichier_status_rd = cache.get(FICHIER_STATUS_KEY) or "up"
+    response_cache_key = _stream_response_cache_key(config_str, stream_type, stream_id, fichier_status_rd)
+    cached_response = cache.get(response_cache_key)
+    if cached_response is not None:
+        logger.info(f"Resultados recuperados del cache de stream. Tiempo total: {time.time() - start_time:.2f}s")
+        return cached_response
+
     metadata_provider = TMDB(config, http_client)
     media = await metadata_provider.get_metadata(stream_id, stream_type)
 
@@ -414,9 +454,6 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
 
     debrid_service = get_debrid_service(config, http_client, warp_client)
     debrid_name = type(debrid_service).__name__
-
-    # Recuperamos estado de 1fichier del cache
-    fichier_status_rd = cache.get(FICHIER_STATUS_KEY) or "up"
 
     if media.type == "movie":
         search_results = await search_movies(media.id)
@@ -428,14 +465,26 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         return {"streams": []}
 
     tasks = []
+    unrestrict_task_cache = {}
     for result in search_results:
         if isinstance(result, tuple):
             link, db_calidad, db_audio, db_info = result
+            db_metadata_text = str((db_calidad, db_audio, db_info))
         else:
             link = result
             db_calidad = db_audio = db_info = ""
+            db_metadata_text = None
         
-        tasks.append(_process_single_link(debrid_service, link, config, db_calidad, db_audio, db_info))
+        tasks.append(_process_single_link(
+            debrid_service,
+            link,
+            config,
+            db_calidad,
+            db_audio,
+            db_info,
+            db_metadata_text,
+            unrestrict_task_cache
+        ))
 
     processed_results = await asyncio.gather(*tasks)
     
@@ -476,7 +525,9 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
     parse_to_debrid_stream(streams, config, media, debrid_name, fichier_is_up=(fichier_status_rd == "up"))
 
     logger.info(f"Resultados encontrados. Tiempo total: {time.time() - start_time:.2f}s")
-    return {"streams": streams}
+    response = {"streams": streams}
+    cache.set(response_cache_key, response, ttl=STREAM_RESPONSE_TTL)
+    return response
 
 
 async def _handle_playback(config_str: str, query: str, file_name) -> str:
