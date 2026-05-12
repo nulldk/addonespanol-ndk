@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -24,7 +25,7 @@ from utils.string_encoding import encodeb64
 class FakeRealDebrid(RealDebrid):
     def __init__(self):
         super().__init__(
-            {"debridKey": " rd-token ", "fichierApiKey": " fichier-token "},
+            {"debridKey": " rd-token "},
             http_client=None,
             warp_client=None,
         )
@@ -99,12 +100,18 @@ class PerformanceOptimizationsTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         cache.clear()
         FICHIER_PREPARED_INFLIGHT.clear()
+        self.env_patcher = patch.dict(os.environ, {"FICHIER_API_KEY": "fichier-token"})
+        self.env_patcher.start()
 
-    async def test_1fichier_preparation_is_cached_per_link_and_key(self):
+    def tearDown(self):
+        self.env_patcher.stop()
+
+    async def test_1fichier_preparation_is_cached_per_link(self):
         debrid = FakeRealDebrid()
 
         first = await debrid._prepare_1fichier_link("https://1fichier.com/?abc")
-        second = await debrid._prepare_1fichier_link("https://1fichier.com/?abc")
+        with patch.dict(os.environ, {"FICHIER_API_KEY": "different-token"}):
+            second = await debrid._prepare_1fichier_link("https://1fichier.com/?abc")
 
         self.assertEqual(first, "https://1fichier.com/?renamed")
         self.assertEqual(second, "https://1fichier.com/?renamed")
@@ -119,6 +126,29 @@ class PerformanceOptimizationsTest(unittest.IsolatedAsyncioTestCase):
         result = await debrid._prepare_1fichier_link("https://example.com/file")
 
         self.assertEqual(result, "https://example.com/file")
+        self.assertEqual(debrid.calls, [])
+
+    async def test_1fichier_api_key_is_selected_from_environment_keys(self):
+        with patch.dict(os.environ, {"FICHIER_API_KEY": " first-token, second-token , ,third-token "}):
+            debrid = FakeRealDebrid()
+            link = "https://1fichier.com/?multi-key"
+            api_keys = ["first-token", "second-token", "third-token"]
+            expected_key = api_keys[
+                int(hashlib.sha256(link.encode("utf-8")).hexdigest(), 16) % len(api_keys)
+            ]
+
+            result = await debrid._prepare_1fichier_link(link)
+
+        self.assertEqual(result, "https://1fichier.com/?renamed")
+        self.assertEqual(debrid.calls[0][2], expected_key)
+
+    async def test_1fichier_without_environment_key_returns_original_link(self):
+        with patch.dict(os.environ, {"FICHIER_API_KEY": ""}):
+            debrid = FakeRealDebrid()
+
+            result = await debrid._prepare_1fichier_link("https://1fichier.com/?no-key")
+
+        self.assertEqual(result, "https://1fichier.com/?no-key")
         self.assertEqual(debrid.calls, [])
 
     async def test_random_1fichier_filename_is_letters_only_without_extension(self):

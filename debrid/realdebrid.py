@@ -11,7 +11,7 @@ import string
 from urllib.parse import unquote, urljoin
 
 logger = setup_logger(__name__)
-FICHIER_PREPARED_LINK_TTL = 24 * 60 * 60
+FICHIER_PREPARED_LINK_TTL = 15 * 24 * 60 * 60
 FICHIER_PREPARED_INFLIGHT = {}
 FOLDER_HREF_REGEX = re.compile(r'<a href="([^"]+)">[^<]*<\/a>')
 
@@ -34,12 +34,12 @@ class RealDebrid(BaseDebrid):
         if "1fichier.com" not in link.lower():
             return link
 
-        fichier_api_key = (self.config.get("fichierApiKey") or os.getenv("FICHIER_API_KEY") or "").strip()
+        fichier_api_key = self._select_fichier_api_key(link)
         if not fichier_api_key:
-            self.logger.warning("Enlace 1fichier detectado, pero no hay fichierApiKey configurada. Se enviará el enlace original a Real-Debrid.")
+            self.logger.warning("Enlace 1fichier detectado, pero no hay FICHIER_API_KEY configurada. Se enviará el enlace original a Real-Debrid.")
             return link
 
-        cache_key = self._fichier_cache_key(link, fichier_api_key)
+        cache_key = self._fichier_cache_key(link)
         cached_link = cache.get(cache_key)
         if cached_link:
             return cached_link
@@ -128,8 +128,23 @@ class RealDebrid(BaseDebrid):
     def _random_filename(self, length=16):
         return ''.join(random.choices(string.ascii_letters, k=length))
 
-    def _fichier_cache_key(self, link, api_key):
-        key_hash = hashlib.sha256(f"{api_key}:{link}".encode("utf-8")).hexdigest()
+    def _select_fichier_api_key(self, link):
+        api_keys = self._fichier_api_keys()
+        if not api_keys:
+            return None
+
+        key_index = int(hashlib.sha256(link.encode("utf-8")).hexdigest(), 16) % len(api_keys)
+        return api_keys[key_index]
+
+    def _fichier_api_keys(self):
+        return [
+            api_key.strip()
+            for api_key in os.getenv("FICHIER_API_KEY", "").split(",")
+            if api_key.strip()
+        ]
+
+    def _fichier_cache_key(self, link):
+        key_hash = hashlib.sha256(link.encode("utf-8")).hexdigest()
         return f"realdebrid:1fichier:prepared:{key_hash}"
 
     async def find_link_in_folder(self, http_folder_url, filename):
