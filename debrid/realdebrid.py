@@ -14,6 +14,7 @@ logger = setup_logger(__name__)
 FICHIER_PREPARED_LINK_TTL = 15 * 24 * 60 * 60
 FICHIER_PREPARED_INFLIGHT = {}
 FOLDER_HREF_REGEX = re.compile(r'<a href="([^"]+)">[^<]*<\/a>')
+WARP_RESTART_LOCK = asyncio.Lock()
 
 class RealDebrid(BaseDebrid):
     def __init__(self, config, http_client: httpx.AsyncClient, warp_client: httpx.AsyncClient = None):
@@ -109,6 +110,9 @@ class RealDebrid(BaseDebrid):
         return link if response.get("updated", 0) > 0 else None
 
     async def _post_1fichier(self, endpoint, payload, api_key):
+        return await self._post_1fichier_once(endpoint, payload, api_key, retry_on_ip_lock=True)
+
+    async def _post_1fichier_once(self, endpoint, payload, api_key, retry_on_ip_lock=False):
         url = f"https://api.1fichier.com/v1/file/{endpoint}"
         headers = {"Authorization": f"Bearer {api_key}"}
         client = self.warp_client or self.http_client
@@ -118,6 +122,11 @@ class RealDebrid(BaseDebrid):
             return response.json()
         except httpx.HTTPStatusError as e:
             self.logger.error(f"1fichier {endpoint} falló con status {e.response.status_code}: {e.response.text}")
+            if retry_on_ip_lock and self.warp_client and self._is_1fichier_ip_locked(e.response):
+                restarted = await self._restart_warp_proxy()
+                if restarted:
+                    self.logger.warning(f"WARP reiniciado tras bloqueo de IP en 1fichier {endpoint}. Reintentando una vez.")
+                    return await self._post_1fichier_once(endpoint, payload, api_key, retry_on_ip_lock=False)
             return None
         except httpx.RequestError as e:
             self.logger.error(f"Error llamando a 1fichier {endpoint}: {e}")
@@ -125,6 +134,64 @@ class RealDebrid(BaseDebrid):
         except ValueError:
             self.logger.error(f"1fichier {endpoint} devolvió una respuesta no JSON: {response.text}")
             return None
+
+    def _is_1fichier_ip_locked(self, response):
+        return response.status_code == 403 and "IP Locked" in response.text
+
+    async def _restart_warp_proxy(self):
+        if os.getenv("WARP_AUTO_RESTART", "true").lower() in ("0", "false", "no"):
+            self.logger.warning("Bloqueo de IP detectado, pero WARP_AUTO_RESTART está desactivado.")
+            return False
+
+        async with WARP_RESTART_LOCK:
+            wireproxy_path = os.getenv("WIREPROXY_PATH", "./wireproxy")
+            config_path = os.getenv("WIREPROXY_CONFIG_PATH", "wireproxy.conf")
+            proxy_host = os.getenv("WARP_PROXY_HOST", "127.0.0.1")
+            proxy_port = int(os.getenv("WARP_PROXY_PORT", "40000"))
+
+            if not os.path.exists(wireproxy_path) or not os.path.exists(config_path):
+                self.logger.error(f"No se puede reiniciar WARP: falta {wireproxy_path} o {config_path}.")
+                return False
+
+            self.logger.warning("Reiniciando wireproxy por bloqueo de IP en 1fichier.")
+            await self._run_process("pkill", "-f", os.path.basename(wireproxy_path))
+            await asyncio.sleep(1)
+
+            try:
+                await asyncio.create_subprocess_exec(
+                    wireproxy_path,
+                    "-c",
+                    config_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except OSError as e:
+                self.logger.error(f"No se pudo iniciar wireproxy: {e}")
+                return False
+
+            return await self._wait_for_warp_proxy(proxy_host, proxy_port)
+
+    async def _run_process(self, *args):
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.communicate()
+        return process.returncode
+
+    async def _wait_for_warp_proxy(self, host, port, attempts=10, delay=0.5):
+        for _ in range(attempts):
+            try:
+                reader, writer = await asyncio.open_connection(host, port)
+                writer.close()
+                await writer.wait_closed()
+                return True
+            except OSError:
+                await asyncio.sleep(delay)
+
+        self.logger.error(f"wireproxy no empezó a escuchar en {host}:{port}.")
+        return False
 
     def _random_filename(self, length=16):
         return ''.join(random.choices(string.ascii_letters, k=length))
