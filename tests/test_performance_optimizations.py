@@ -5,8 +5,9 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 from debrid.realdebrid import FICHIER_PREPARED_INFLIGHT, RealDebrid
 from metadata.tmdb import TMDB
 from models.movie import Movie
@@ -75,6 +76,27 @@ class RecordingPostClient:
     async def post(self, url, headers=None, json=None):
         self.post_calls.append((url, headers, json))
         return FakeJsonResponse(self.payload)
+
+
+class FakeHttpStatusResponse:
+    def __init__(self, status_code, text):
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self):
+        request = httpx.Request("POST", "https://api.1fichier.com/v1/file/cp.cgi")
+        response = httpx.Response(self.status_code, text=self.text, request=request)
+        raise httpx.HTTPStatusError("HTTP error", request=request, response=response)
+
+
+class SequencePostClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.post_calls = []
+
+    async def post(self, url, headers=None, json=None):
+        self.post_calls.append((url, headers, json))
+        return self.responses.pop(0)
 
 
 class FakeFolderClient:
@@ -230,6 +252,50 @@ class PerformanceOptimizationsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(url, "https://api.1fichier.com/v1/file/cp.cgi")
         self.assertEqual(headers["Authorization"], "Bearer fichier-token")
         self.assertEqual(payload, {"urls": ["https://1fichier.com/?abc"]})
+
+    async def test_1fichier_ip_lock_restarts_warp_and_retries_once(self):
+        warp_client = SequencePostClient([
+            FakeHttpStatusResponse(403, '{"message":"IP Locked #79","status":"KO"}'),
+            FakeJsonResponse({"status": "OK"}),
+        ])
+        debrid = RealDebrid(
+            {"debridKey": "rd-token"},
+            http_client=RecordingPostClient({"status": "KO"}),
+            warp_client=warp_client,
+        )
+        debrid._restart_warp_proxy = AsyncMock(return_value=True)
+
+        response = await debrid._post_1fichier(
+            "cp.cgi",
+            {"urls": ["https://1fichier.com/?abc"]},
+            "fichier-token",
+        )
+
+        self.assertEqual(response, {"status": "OK"})
+        self.assertEqual(len(warp_client.post_calls), 2)
+        debrid._restart_warp_proxy.assert_awaited_once()
+
+    async def test_1fichier_ip_lock_does_not_retry_when_warp_restart_fails(self):
+        warp_client = SequencePostClient([
+            FakeHttpStatusResponse(403, '{"message":"IP Locked #79","status":"KO"}'),
+            FakeJsonResponse({"status": "OK"}),
+        ])
+        debrid = RealDebrid(
+            {"debridKey": "rd-token"},
+            http_client=RecordingPostClient({"status": "KO"}),
+            warp_client=warp_client,
+        )
+        debrid._restart_warp_proxy = AsyncMock(return_value=False)
+
+        response = await debrid._post_1fichier(
+            "cp.cgi",
+            {"urls": ["https://1fichier.com/?abc"]},
+            "fichier-token",
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(len(warp_client.post_calls), 1)
+        debrid._restart_warp_proxy.assert_awaited_once()
 
     async def test_real_debrid_folder_listing_is_cached_per_service_instance(self):
         html = """
