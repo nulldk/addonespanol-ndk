@@ -56,6 +56,27 @@ class FakeFolderResponse:
         return None
 
 
+class FakeJsonResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class RecordingPostClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.post_calls = []
+
+    async def post(self, url, headers=None, json=None):
+        self.post_calls.append((url, headers, json))
+        return FakeJsonResponse(self.payload)
+
+
 class FakeFolderClient:
     def __init__(self, html):
         self.html = html
@@ -186,6 +207,29 @@ class PerformanceOptimizationsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call[0] for call in debrid.calls], ["cp.cgi", "cp.cgi", "chattr.cgi"])
         self.assertIn("rename", debrid.calls[0][1])
         self.assertNotIn("rename", debrid.calls[1][1])
+
+    async def test_1fichier_api_uses_warp_client_when_available(self):
+        http_client = RecordingPostClient({"status": "KO"})
+        warp_client = RecordingPostClient({"status": "OK"})
+        debrid = RealDebrid(
+            {"debridKey": "rd-token"},
+            http_client=http_client,
+            warp_client=warp_client,
+        )
+
+        response = await debrid._post_1fichier(
+            "cp.cgi",
+            {"urls": ["https://1fichier.com/?abc"]},
+            "fichier-token",
+        )
+
+        self.assertEqual(response, {"status": "OK"})
+        self.assertEqual(len(warp_client.post_calls), 1)
+        self.assertEqual(http_client.post_calls, [])
+        url, headers, payload = warp_client.post_calls[0]
+        self.assertEqual(url, "https://api.1fichier.com/v1/file/cp.cgi")
+        self.assertEqual(headers["Authorization"], "Bearer fichier-token")
+        self.assertEqual(payload, {"urls": ["https://1fichier.com/?abc"]})
 
     async def test_real_debrid_folder_listing_is_cached_per_service_instance(self):
         html = """
