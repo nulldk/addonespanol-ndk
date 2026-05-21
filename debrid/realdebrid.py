@@ -7,6 +7,7 @@ import httpx
 import os
 import random
 import re
+import signal
 import string
 from urllib.parse import unquote, urljoin
 
@@ -154,7 +155,7 @@ class RealDebrid(BaseDebrid):
                 return False
 
             self.logger.warning("Reiniciando wireproxy por bloqueo de IP en 1fichier.")
-            await self._run_process("pkill", "-f", os.path.basename(wireproxy_path))
+            await self._terminate_wireproxy_processes(wireproxy_path)
             await asyncio.sleep(1)
 
             try:
@@ -171,14 +172,60 @@ class RealDebrid(BaseDebrid):
 
             return await self._wait_for_warp_proxy(proxy_host, proxy_port)
 
-    async def _run_process(self, *args):
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await process.communicate()
-        return process.returncode
+    async def _terminate_wireproxy_processes(self, wireproxy_path):
+        pids = self._wireproxy_pids(wireproxy_path)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        await asyncio.sleep(1)
+
+        for pid in pids:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                continue
+
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def _wireproxy_pids(self, wireproxy_path):
+        wireproxy_name = os.path.basename(wireproxy_path)
+        current_pid = os.getpid()
+        pids = []
+
+        try:
+            proc_entries = os.listdir("/proc")
+        except OSError:
+            return pids
+
+        for entry in proc_entries:
+            if not entry.isdigit():
+                continue
+
+            pid = int(entry)
+            if pid == current_pid:
+                continue
+
+            try:
+                with open(f"/proc/{entry}/cmdline", "rb") as cmdline_file:
+                    cmdline = cmdline_file.read().decode("utf-8", errors="ignore")
+            except OSError:
+                continue
+
+            args = [arg for arg in cmdline.split("\0") if arg]
+            if not args:
+                continue
+
+            executable = args[0]
+            if executable == wireproxy_path or os.path.basename(executable) == wireproxy_name:
+                pids.append(pid)
+
+        return pids
 
     async def _wait_for_warp_proxy(self, host, port, attempts=10, delay=0.5):
         for _ in range(attempts):

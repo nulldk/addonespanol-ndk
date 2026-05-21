@@ -297,6 +297,30 @@ class PerformanceOptimizationsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(warp_client.post_calls), 1)
         debrid._restart_warp_proxy.assert_awaited_once()
 
+    async def test_warp_restart_terminates_wireproxy_without_system_pkill(self):
+        debrid = RealDebrid(
+            {"debridKey": "rd-token"},
+            http_client=RecordingPostClient({"status": "KO"}),
+            warp_client=RecordingPostClient({"status": "OK"}),
+        )
+        debrid._terminate_wireproxy_processes = AsyncMock()
+        debrid._wait_for_warp_proxy = AsyncMock(return_value=True)
+
+        with patch("os.path.exists", return_value=True), \
+                patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as start_process:
+            restarted = await debrid._restart_warp_proxy()
+
+        self.assertTrue(restarted)
+        debrid._terminate_wireproxy_processes.assert_awaited_once_with("./wireproxy")
+        start_process.assert_awaited_once_with(
+            "./wireproxy",
+            "-c",
+            "wireproxy.conf",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        debrid._wait_for_warp_proxy.assert_awaited_once_with("127.0.0.1", 40000)
+
     async def test_real_debrid_folder_listing_is_cached_per_service_instance(self):
         html = """
         <a href="../">Parent Directory</a>
