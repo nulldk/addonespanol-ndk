@@ -111,8 +111,9 @@ class RealDebrid(BaseDebrid):
     async def _post_1fichier(self, endpoint, payload, api_key):
         url = f"https://api.1fichier.com/v1/file/{endpoint}"
         headers = {"Authorization": f"Bearer {api_key}"}
+        client = self.warp_client or self.http_client
         try:
-            response = await self.http_client.post(url, headers=headers, json=payload)
+            response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
