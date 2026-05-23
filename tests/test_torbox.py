@@ -5,6 +5,9 @@ import httpx
 
 from debrid.get_debrid_service import get_debrid_service
 from debrid.torbox import TorBox
+from models.movie import Movie
+from utils.cache import cache
+from utils.stremio_parser import parse_to_debrid_stream
 
 
 class TorBoxProviderTest(unittest.IsolatedAsyncioTestCase):
@@ -328,6 +331,7 @@ class TorBoxProviderTest(unittest.IsolatedAsyncioTestCase):
 class TorBoxIntegrationShapeTest(unittest.IsolatedAsyncioTestCase):
     async def test_catalog_lookup_for_torbox_does_not_start_download(self):
         import main
+        cache.clear()
 
         class TorBox:
             config = {}
@@ -353,6 +357,43 @@ class TorBoxIntegrationShapeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["debrid_pending"])
         self.assertFalse(data["streamable"])
         self.assertEqual(data["quality"], "1080p")
+        self.assertIsNone(data["filesize"])
+
+    async def test_catalog_lookup_for_torbox_reuses_cached_filesize(self):
+        import main
+        cache.clear()
+        cache.set("https://host.example/file", {
+            "filesize": 5 * 1024 ** 3,
+            "quality": "1080p",
+            "nombre_fichero": "cached-file.mkv",
+            "languages": ["es"],
+            "quality_spec": ["WEBDL"],
+        })
+
+        class TorBox:
+            config = {}
+
+            async def unrestrict_link(self, link):
+                raise AssertionError("TorBox should only start on playback click")
+
+            async def check_cached_link(self, link):
+                return None
+
+        link, data, is_valid = await main._process_single_link(
+            TorBox(),
+            "https://host.example/file",
+            {},
+            "1080p",
+            "CASTELLANO",
+            "WEB-DL",
+            "('1080p', 'CASTELLANO', 'WEB-DL')",
+        )
+
+        self.assertEqual(link, "https://host.example/file")
+        self.assertTrue(is_valid)
+        self.assertTrue(data["debrid_pending"])
+        self.assertEqual(data["filesize"], 5 * 1024 ** 3)
+        self.assertEqual(data["nombre_fichero"], "cached-file.mkv")
 
     async def test_catalog_lookup_for_torbox_marks_cached_links_streamable(self):
         import main
@@ -388,6 +429,25 @@ class TorBoxIntegrationShapeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["streamable"])
         self.assertEqual(data["nombre_fichero"], "cached.1080p.mkv")
         self.assertEqual(data["filesize"], 200)
+
+    def test_parser_shows_unknown_size_when_torbox_download_has_no_filesize(self):
+        media = Movie("1", ["Movie"], "2026", [])
+        streams = [{
+            "link": "https://host.example/file",
+            "playback": "http://addon/play",
+            "filesize": None,
+            "quality": "1080p",
+            "quality_spec": ["WEBDL"],
+            "languages": ["es"],
+            "debrid_pending": True,
+            "streamable": False,
+        }]
+
+        parse_to_debrid_stream(streams, {"debrid": "true"}, media, "TorBox")
+
+        self.assertIn("[TB Download]", streams[0]["name"])
+        self.assertIn("💾 Desconocido", streams[0]["description"])
+        self.assertEqual(streams[0]["behaviorHints"]["videoSize"], 0)
 
     async def test_main_unrestricted_link_accepts_torbox_normalized_response(self):
         import main

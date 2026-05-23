@@ -351,11 +351,13 @@ async def _process_single_link(
         filename = cached_metadata.get('nombre_fichero', '') if cached_metadata else metadata_source
         cached_info = await debrid_service.check_cached_link(link)
         is_cached = bool(cached_info)
+        cached_filesize = cached_metadata.get('filesize') if cached_metadata else None
+        cached_filename = cached_metadata.get('nombre_fichero') if cached_metadata else None
         data = {
             'link': link,
-            'filesize': cached_info.get('filesize', 0) if cached_info else cached_metadata.get('filesize', 0) if cached_metadata else 0,
+            'filesize': cached_info.get('filesize') if cached_info else cached_filesize,
             'quality': cached_metadata.get('quality', db_calidad or '') if cached_metadata else db_calidad or '',
-            'nombre_fichero': cached_info.get('filename') if cached_info else filename,
+            'nombre_fichero': cached_info.get('filename') if cached_info else cached_filename or filename,
             'db_calidad': db_calidad or '',
             'db_audio': db_audio or '',
             'db_info': db_info or '',
@@ -545,7 +547,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
         # IMPORTANTE: Si es válido (sea True o link), lo añadimos
         # Antes el filtro era implícito porque final_link era string
         
-        filesize_gb = data.get('filesize', 0) / (1024 ** 3)
+        filesize_gb = (data.get('filesize') or 0) / (1024 ** 3)
         if 'maxSize' in config and filesize_gb > int(config['maxSize']):
             continue
         if "selectedQualityExclusion" in config and data.get("quality") in config["selectedQualityExclusion"]:
@@ -553,7 +555,7 @@ async def get_results(config_str: str, stream_type: str, stream_id: str):
             
         results_data.append((link, data))
 
-    results_data.sort(key=lambda x: x[1].get('filesize', 0), reverse=True)
+    results_data.sort(key=lambda x: x[1].get('filesize') or 0, reverse=True)
 
     streams_unfiltered = []
     for link, data in results_data:
