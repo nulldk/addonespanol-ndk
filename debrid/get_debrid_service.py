@@ -1,6 +1,7 @@
 from fastapi.exceptions import HTTPException
 from debrid.alldebrid import AllDebrid
 from debrid.realdebrid import RealDebrid
+from debrid.torbox import TorBox
 import httpx
 
 def get_debrid_service(config, http_client: httpx.AsyncClient, warp_client: httpx.AsyncClient = None):
@@ -9,6 +10,8 @@ def get_debrid_service(config, http_client: httpx.AsyncClient, warp_client: http
         debrid_service = RealDebrid(config, http_client, warp_client)
     elif service_name == "alldebrid":
         debrid_service = AllDebrid(config, http_client)
+    elif service_name == "torbox":
+        debrid_service = TorBox(config, http_client)
     else:
         raise HTTPException(status_code=500, detail="Invalid service configuration.")
 

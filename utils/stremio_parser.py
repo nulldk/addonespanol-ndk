@@ -38,6 +38,8 @@ def parse_to_debrid_stream(stream_list: list, config, media, nombre_debrid, fich
                 addon_title = "[RD+ ✅]"
         elif nombre_debrid == "AllDebrid":
             addon_title = "[AD+]"
+        elif nombre_debrid == "TorBox":
+            addon_title = "[TB Download]" if link.get('debrid_pending') else "[TB+]"
 
         if media.type == "movie":
             title_desc = f"{media.titles[0]} - "

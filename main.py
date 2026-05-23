@@ -62,6 +62,7 @@ warp_client = httpx.AsyncClient(timeout=30, proxy=WARP_PROXY_URL)
 
 FICHIER_STATUS_KEY = "rd_1fichier_status"
 STREAM_RESPONSE_TTL = 5 * 60
+TORBOX_PENDING_VIDEO_PATH = os.path.join(ROOT_PATH, "assets", "torbox-descargando.mp4")
 
 async def check_real_debrid_1fichier_availability():
     if not DEBRID_API_KEY:
@@ -223,6 +224,8 @@ async def configure(request: Request):
 @app.get("/static/{file_path:path}", include_in_schema=False)
 async def static_files(file_path: str):
     """Sirve archivos estáticos para la interfaz web."""
+    if file_path == "torbox-descargando.mp4":
+        return FileResponse(TORBOX_PENDING_VIDEO_PATH, media_type="video/mp4")
     return FileResponse(f"templates/{file_path}")
 
 
@@ -294,8 +297,17 @@ async def _get_unrestricted_link(debrid_service, original_link: str) -> dict | N
             result['download'] = data.get('link')
             result['filename'] = data.get('filename')
             result['filesize'] = data.get('filesize', 0)
+
+        elif debrid_name == "TorBox":
+            result['download'] = unrestricted_data.get('download')
+            result['filename'] = unrestricted_data.get('filename')
+            result['filesize'] = unrestricted_data.get('filesize', 0)
+            if unrestricted_data.get('pending'):
+                result['pending'] = True
+                result['web_id'] = unrestricted_data.get('web_id')
+                result['download_state'] = unrestricted_data.get('download_state')
             
-        if not result['download']:
+        if not result['download'] and not result.get('pending'):
             return None
 
         return result
@@ -372,6 +384,8 @@ async def _process_single_link(
         if unrestricted_info:
             data['filesize'] = unrestricted_info.get('filesize', 0)
             data['nombre_fichero'] = unrestricted_info.get('filename', '')
+            data['debrid_pending'] = unrestricted_info.get('pending', False)
+            data['streamable'] = not data['debrid_pending']
             # Nota: final_link es específico del usuario actual, NO lo cacheamos
             final_link_user = unrestricted_info.get('download')
 
@@ -407,7 +421,7 @@ async def _process_single_link(
                 }, ttl=3600) # Cache por 1 hora
 
             # Devolvemos el link final para este usuario (aunque en get_results no se usa para generar la lista)
-            return (link, data, final_link_user)
+            return (link, data, True if data['debrid_pending'] else final_link_user)
         else:
             logger.debug(f"Fallo al desrestringir enlace: {link}") 
     except Exception as e:
@@ -553,6 +567,10 @@ async def _handle_playback(config_str: str, query: str, file_name) -> str:
     if final_link:
         logger.info(f"Enlace desrestringido exitosamente. Tiempo total: {time.time() - start_time:.2f}s")
         return final_link
+
+    if unrestricted_info and unrestricted_info.get('pending') and type(debrid_service).__name__ == "TorBox":
+        logger.info(f"TorBox todavía está descargando el enlace. Devolviendo video de espera. Tiempo total: {time.time() - start_time:.2f}s")
+        return f"{config['addonHost'].rstrip('/')}/static/torbox-descargando.mp4"
 
     logger.error(f"No se pudo obtener el enlace final para la consulta: {query}")
     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No se pudo procesar el enlace.")
