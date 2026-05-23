@@ -57,8 +57,11 @@ def parse_to_debrid_stream(stream_list: list, config, media, nombre_debrid, fich
         if quality_spec and quality_spec[0] not in ["Unknown", ""]:
             title_desc += f"({'|'.join(quality_spec)})"
 
-        size_in_gb = round(int(link['filesize']) / 1024 / 1024 / 1024, 2)
-        description = f"{title_desc}\n💾 {size_in_gb}GB\n"
+        filesize = link.get('filesize')
+        has_filesize = filesize is not None and int(filesize) > 0
+        size_in_gb = round(int(filesize) / 1024 / 1024 / 1024, 2) if has_filesize else 0
+        size_label = f"{size_in_gb}GB" if has_filesize else "Desconocido"
+        description = f"{title_desc}\n💾 {size_label}\n"
 
         for language in link.get('languages', []):
             description += f"{get_emoji(language)}/"
@@ -75,7 +78,7 @@ def parse_to_debrid_stream(stream_list: list, config, media, nombre_debrid, fich
                 "behaviorHints": {
                     "notWebReady": not link.get('streamable', False),
                     "filename": title_desc,
-                    "videoSize": int(link['filesize']),
+                    "videoSize": int(filesize) if has_filesize else 0,
                     "bingeGroup": f"NDK | {media.type}_{media.id}_{resolution}",
                 },
             }
