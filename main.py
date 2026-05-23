@@ -63,6 +63,9 @@ warp_client = httpx.AsyncClient(timeout=30, proxy=WARP_PROXY_URL)
 FICHIER_STATUS_KEY = "rd_1fichier_status"
 STREAM_RESPONSE_TTL = 5 * 60
 TORBOX_PENDING_VIDEO_PATH = os.path.join(ROOT_PATH, "assets", "torbox-descargando.mp4")
+TORBOX_PLAYBACK_INITIAL_POLL_INTERVAL = float(os.getenv("TORBOX_PLAYBACK_INITIAL_POLL_INTERVAL", "5"))
+TORBOX_PLAYBACK_MAX_POLL_INTERVAL = float(os.getenv("TORBOX_PLAYBACK_MAX_POLL_INTERVAL", "300"))
+TORBOX_PLAYBACK_POLL_BACKOFF = float(os.getenv("TORBOX_PLAYBACK_POLL_BACKOFF", "1.5"))
 
 async def check_real_debrid_1fichier_availability():
     if not DEBRID_API_KEY:
@@ -339,8 +342,34 @@ async def _process_single_link(
     db_metadata_text=None,
     unrestrict_task_cache=None
 ):
+    debrid_name = type(debrid_service).__name__
     # 1. Intentar recuperar metadatos del caché global (independiente del usuario)
     cached_metadata = cache.get(link)
+
+    if debrid_name == "TorBox":
+        metadata_source = db_metadata_text or " ".join(filter(None, [db_calidad, db_audio, db_info]))
+        filename = cached_metadata.get('nombre_fichero', '') if cached_metadata else metadata_source
+        cached_info = await debrid_service.check_cached_link(link)
+        is_cached = bool(cached_info)
+        data = {
+            'link': link,
+            'filesize': cached_info.get('filesize', 0) if cached_info else cached_metadata.get('filesize', 0) if cached_metadata else 0,
+            'quality': cached_metadata.get('quality', db_calidad or '') if cached_metadata else db_calidad or '',
+            'nombre_fichero': cached_info.get('filename') if cached_info else filename,
+            'db_calidad': db_calidad or '',
+            'db_audio': db_audio or '',
+            'db_info': db_info or '',
+            'metadata_filename': db_metadata_text,
+            'debrid_pending': not is_cached,
+            'streamable': is_cached,
+        }
+        if cached_metadata:
+            data['languages'] = cached_metadata.get('languages')
+            data['quality_spec'] = cached_metadata.get('quality_spec')
+        elif metadata_source:
+            data['languages'] = detect_languages(metadata_source)
+            data['quality_spec'] = detect_quality_spec(metadata_source)
+        return (link, data, True)
     
     if cached_metadata:
         # Cache HIT: Reconstruimos el objeto data usando la info del cache + info de la DB
@@ -560,6 +589,7 @@ async def _handle_playback(config_str: str, query: str, file_name) -> str:
     # file_name se recibe pero no se usa estrictamente para la lógica, es decorativo en la URL
     
     debrid_service = get_debrid_service(config, http_client, warp_client)
+    debrid_name = type(debrid_service).__name__
 
     unrestricted_info = await _get_unrestricted_link(debrid_service, decoded_query)
     final_link = unrestricted_info.get('download') if unrestricted_info else None
@@ -568,12 +598,30 @@ async def _handle_playback(config_str: str, query: str, file_name) -> str:
         logger.info(f"Enlace desrestringido exitosamente. Tiempo total: {time.time() - start_time:.2f}s")
         return final_link
 
-    if unrestricted_info and unrestricted_info.get('pending') and type(debrid_service).__name__ == "TorBox":
-        logger.info(f"TorBox todavía está descargando el enlace. Devolviendo video de espera. Tiempo total: {time.time() - start_time:.2f}s")
-        return f"{config['addonHost'].rstrip('/')}/static/torbox-descargando.mp4"
+    if unrestricted_info and unrestricted_info.get('pending') and debrid_name == "TorBox":
+        final_link = await _wait_for_torbox_download(debrid_service, decoded_query, start_time)
+        return final_link
 
     logger.error(f"No se pudo obtener el enlace final para la consulta: {query}")
     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No se pudo procesar el enlace.")
+
+
+async def _wait_for_torbox_download(debrid_service, decoded_query: str, start_time: float) -> str | None:
+    poll_interval = TORBOX_PLAYBACK_INITIAL_POLL_INTERVAL
+    while True:
+        await asyncio.sleep(poll_interval)
+        unrestricted_info = await _get_unrestricted_link(debrid_service, decoded_query)
+        final_link = unrestricted_info.get('download') if unrestricted_info else None
+        if final_link:
+            logger.info(f"TorBox terminó la descarga durante playback. Tiempo total: {time.time() - start_time:.2f}s")
+            return final_link
+        if not unrestricted_info or not unrestricted_info.get('pending'):
+            return None
+
+        poll_interval = min(
+            TORBOX_PLAYBACK_MAX_POLL_INTERVAL,
+            max(TORBOX_PLAYBACK_INITIAL_POLL_INTERVAL, poll_interval * TORBOX_PLAYBACK_POLL_BACKOFF),
+        )
 
 
 @app.get("/playback/{config_str}/{file_name}/{query}")
