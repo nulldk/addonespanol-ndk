@@ -48,9 +48,39 @@ class TorBox(BaseDebrid):
             "web_id": web_id,
         }
 
-    async def _create_web_download(self, link):
+    async def check_cached_link(self, link):
+        created_download = await self._create_web_download(
+            link,
+            add_only_if_cached=True,
+            recover_active_limit=False,
+            log_errors=False,
+        )
+        if not created_download:
+            return None
+
+        web_id = created_download.get("webdownload_id") or created_download.get("id")
+        if web_id is None:
+            return None
+
+        web_download = await self._get_web_download(web_id)
+        selected_file = self._select_file(web_download)
+        if not self._is_download_ready(web_download):
+            return None
+
+        return {
+            "download": None,
+            "filename": self._filename(web_download, selected_file, link),
+            "filesize": self._filesize(web_download, selected_file),
+            "pending": False,
+            "web_id": web_id,
+        }
+
+    async def _create_web_download(self, link, add_only_if_cached=False, recover_active_limit=True, log_errors=True):
         url = f"{self.base_url}/webdl/createwebdownload"
         data = {"link": link}
+        if add_only_if_cached:
+            data["add_only_if_cached"] = "true"
+
         response = await self._request_json("post", url, data=data, headers=self.headers)
         if not self._is_success(response):
             if response and response.get("error") == "DUPLICATE_ITEM":
@@ -58,7 +88,18 @@ class TorBox(BaseDebrid):
                 if existing_download and existing_download.get("id") is not None:
                     return {"webdownload_id": existing_download["id"]}
 
-            self._log_torbox_error("crear web download", response)
+            if response and response.get("error") == "ACTIVE_LIMIT" and recover_active_limit:
+                deleted = await self._delete_lowest_progress_web_download()
+                if deleted:
+                    return await self._create_web_download(
+                        link,
+                        add_only_if_cached=add_only_if_cached,
+                        recover_active_limit=False,
+                        log_errors=log_errors,
+                    )
+
+            if log_errors:
+                self._log_torbox_error("crear web download", response)
             return None
 
         return response.get("data") or {}
@@ -98,6 +139,56 @@ class TorBox(BaseDebrid):
 
         return {}
 
+    async def _get_web_downloads(self):
+        url = f"{self.base_url}/webdl/mylist"
+        response = await self._request_json(
+            "get",
+            url,
+            headers=self.headers,
+            params={"bypass_cache": "true", "limit": 1000},
+        )
+        if not self._is_success(response):
+            self._log_torbox_error("obtener lista de web downloads", response)
+            return []
+
+        data = response.get("data") or []
+        return data if isinstance(data, list) else [data]
+
+    async def _delete_lowest_progress_web_download(self):
+        active_downloads = [
+            web_download
+            for web_download in await self._get_web_downloads()
+            if self._is_active_download(web_download) and web_download.get("id") is not None
+        ]
+        if not active_downloads:
+            self.logger.warning("TorBox devolvió ACTIVE_LIMIT, pero no se encontró ningún web download activo para borrar.")
+            return False
+
+        web_download_to_delete = min(
+            active_downloads,
+            key=lambda web_download: float(web_download.get("progress") or 0),
+        )
+        deleted = await self._delete_web_download(web_download_to_delete["id"])
+        if deleted:
+            self.logger.warning(
+                f"TorBox ACTIVE_LIMIT: borrado web download {web_download_to_delete['id']} "
+                f"con progreso {web_download_to_delete.get('progress', 0)}% para liberar un slot."
+            )
+        return deleted
+
+    async def _delete_web_download(self, web_id):
+        url = f"{self.base_url}/webdl/controlwebdownload"
+        response = await self._request_json(
+            "post",
+            url,
+            json_data={"webdl_id": web_id, "operation": "delete", "all": False},
+            headers=self.headers,
+        )
+        if not self._is_success(response):
+            self._log_torbox_error("borrar web download", response)
+            return False
+        return True
+
     async def _request_download_link(self, web_id, file_id=0):
         url = f"{self.base_url}/webdl/requestdl"
         response = await self._request_json(
@@ -118,12 +209,12 @@ class TorBox(BaseDebrid):
         data = response.get("data")
         return data if isinstance(data, str) else None
 
-    async def _request_json(self, method, url, data=None, headers=None, params=None):
+    async def _request_json(self, method, url, data=None, headers=None, params=None, json_data=None):
         try:
             if method == "get":
                 response = await self.http_client.get(url, headers=headers, params=params)
             elif method == "post":
-                response = await self.http_client.post(url, data=data, headers=headers)
+                response = await self.http_client.post(url, data=data, json=json_data, headers=headers)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -164,6 +255,15 @@ class TorBox(BaseDebrid):
             and web_download.get("download_finished")
             and web_download.get("files")
         )
+
+    def _is_active_download(self, web_download):
+        if web_download.get("download_finished"):
+            return False
+        if web_download.get("active") is True:
+            return True
+
+        download_state = str(web_download.get("download_state") or "").lower()
+        return download_state in {"downloading", "queued", "meta_dl", "checking", "cached"}
 
     def _filename(self, web_download, selected_file, fallback):
         if selected_file and selected_file.get("name"):
