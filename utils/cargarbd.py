@@ -227,14 +227,14 @@ def check_and_download():
     commit_sha = commit_id.split('/')[-1]
     logger.info(f"Commit remoto detectado: {commit_sha}")
 
-    if commit_sha == version_data.get("last_commit"):
-        logger.info("No hay nuevos commits. Nada que actualizar.")
-        return False
+    same_commit = commit_sha == version_data.get("last_commit")
+    if same_commit:
+        logger.info("El commit remoto ya estaba registrado. Se revisarán hashes de archivos igualmente.")
 
-    version_data["last_commit"] = commit_sha
     clone_or_update_repo()
     logger.info(f"Directorio de contenido tras descarga: {os.path.abspath(REPO_DIR)}")
     updated = False
+    processing_failed = False
 
     zm3_files = []
     up_files = []
@@ -276,6 +276,9 @@ def check_and_download():
                     shutil.copy(DB_ENCRYPTED_PATH, DB_DECRYPTED_PATH)
                     decryptbd(DB_DECRYPTED_PATH)
                 logger.info("Base de datos descifrada.")
+            else:
+                processing_failed = True
+                logger.error(f"No se pudo procesar .zm3: {fname}")
                 
         else:
             logger.info(f"Sin cambios en {fname}")
@@ -293,12 +296,23 @@ def check_and_download():
             if process_up_file(path):
                 version_data[fname] = current_hash
                 updated = True
+            else:
+                processing_failed = True
+                logger.error(f"No se pudo procesar .up: {fname}")
         else:
             logger.info(f"Sin cambios en {fname}")
 
     if up_files:
         shutil.copy(DB_ENCRYPTED_PATH, DB_DECRYPTED_PATH)
         decryptbd(DB_DECRYPTED_PATH)
+    if processing_failed:
+        logger.warning(
+            f"No se marca el commit {commit_sha} como completado porque hubo errores procesando archivos."
+        )
+    else:
+        version_data["last_commit"] = commit_sha
+        if not updated and same_commit:
+            logger.info("No hay archivos nuevos o modificados que procesar.")
     with open(VERSION_FILE, 'w') as f:
         json.dump(version_data, f, indent=4)
 
