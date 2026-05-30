@@ -211,6 +211,8 @@ def check_and_download():
             except json.JSONDecodeError:
                 logger.warning("El archivo version.txt está corrupto o vacío.")
                 pass # Se continuará con un diccionario vacío
+    logger.info(f"Archivo de control de updates: {os.path.abspath(VERSION_FILE)}")
+    logger.info(f"Commit local registrado: {version_data.get('last_commit')}")
 
     resp = requests.get(REPO_URL_ATOM, timeout=30)
     resp.raise_for_status()
@@ -223,6 +225,7 @@ def check_and_download():
 
     commit_id = entry.find('{http://www.w3.org/2005/Atom}id').text
     commit_sha = commit_id.split('/')[-1]
+    logger.info(f"Commit remoto detectado: {commit_sha}")
 
     if commit_sha == version_data.get("last_commit"):
         logger.info("No hay nuevos commits. Nada que actualizar.")
@@ -230,14 +233,17 @@ def check_and_download():
 
     version_data["last_commit"] = commit_sha
     clone_or_update_repo()
+    logger.info(f"Directorio de contenido tras descarga: {os.path.abspath(REPO_DIR)}")
     updated = False
 
     zm3_files = []
     up_files = []
+    detected_files = []
     for fname in os.listdir(REPO_DIR):
         path = os.path.join(REPO_DIR, fname)
         if not os.path.isfile(path):
             continue
+        detected_files.append(fname)
         if fname.endswith('.zm3'):
             zm3_files.append(fname)
         elif '.up' in fname:
@@ -245,11 +251,19 @@ def check_and_download():
 
     zm3_files.sort()
     up_files.sort()
+    detected_files.sort()
+    logger.info(f"Archivos detectados en repo: {detected_files}")
+    logger.info(f"ZM3 detectados: {zm3_files}")
+    logger.info(f"UP detectados: {up_files}")
 
     # Procesar primero todos los archivos .zm3
     for fname in zm3_files:
         path = os.path.join(REPO_DIR, fname)
         current_hash = compute_hash(path)
+        logger.info(
+            f"Estado .zm3 {fname}: hash_guardado={version_data.get(fname)} "
+            f"hash_actual={current_hash}"
+        )
         if version_data.get(fname) != current_hash:
             logger.info(f"Procesando .zm3: {fname}")
             if download_and_process_file(path):
@@ -270,6 +284,10 @@ def check_and_download():
     for fname in up_files:
         path = os.path.join(REPO_DIR, fname)
         current_hash = compute_hash(path)
+        logger.info(
+            f"Estado .up {fname}: hash_guardado={version_data.get(fname)} "
+            f"hash_actual={current_hash}"
+        )
         if version_data.get(fname) != current_hash:
             logger.info(f"Procesando .up: {fname}")
             if process_up_file(path):
