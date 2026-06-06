@@ -91,7 +91,7 @@ async def check_real_debrid_1fichier_availability():
     finally:
         # Usamos cache.set síncrono
         cache.set(FICHIER_STATUS_KEY, status, ttl=1800)
-        logger.info(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
+        logger.update(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
 
 @crontab("*/15 * * * *", start=not IS_DEV)
 async def scheduled_fichier_check():
@@ -101,15 +101,15 @@ async def scheduled_fichier_check():
 async def schedule_catalog_update_notification():
     """Espera 15 minutos y luego llama a la URL de actualización."""
     wait_time_seconds = 15 * 60
-    logger.info(f"Programando llamada a updatedb en {wait_time_seconds} segundos...")
+    logger.update(f"Programando llamada a updatedb en {wait_time_seconds} segundos...")
     
     await asyncio.sleep(wait_time_seconds)
     
     try:
         url = 'https://ndkcatalogs.myblacknass.synology.me/updatedb'
-        logger.info(f"Ejecutando llamada diferida a: {url}")
+        logger.update(f"Ejecutando llamada diferida a: {url}")
         await http_client.get(url)
-        logger.info("Llamada a updatedb realizada con éxito.")
+        logger.update("Llamada a updatedb realizada con éxito.")
     except Exception as e:
         logger.error(f"Error al llamar a updatedb tras la espera: {e}")
 
@@ -121,7 +121,7 @@ async def background_db_loader():
     Tarea en segundo plano para descargar y preparar la base de datos.
     """
     global IS_DB_READY
-    logger.info("Iniciando carga de base de datos en segundo plano...")
+    logger.update("Iniciando carga de base de datos en segundo plano...")
     try:
         # Ejecutar check_and_download en un executor para no bloquear el loop principal
         # ya que contiene muchas operaciones de E/S bloqueantes y CPU
@@ -131,11 +131,11 @@ async def background_db_loader():
         if updated:
              # Si se actualizó, ejecutar setup_index también en executor por si acaso
              await loop.run_in_executor(None, setup_index, DB_DECRYPTED_PATH)
-             logger.info("Base de datos actualizada y lista.")
+             logger.update("Base de datos actualizada y lista.")
              if not IS_DEV:
                 asyncio.create_task(schedule_catalog_update_notification())
         else:
-             logger.info("Base de datos verificada sin cambios.")
+             logger.update("Base de datos verificada sin cambios.")
              # Asegurar que setup_index se ejecute si ya existía la BD pero no se actualizó
              if os.path.exists(DB_DECRYPTED_PATH):
                  await loop.run_in_executor(None, setup_index, DB_DECRYPTED_PATH)
@@ -158,10 +158,10 @@ async def lifespan(app: FastAPI):
     cache.set(FICHIER_STATUS_KEY, "up")
     logger.info(f"Estado inicial de 1fichier establecido a 'up' por defecto.")
 
-    logger.info("Estableciendo timestamps de arranque...")
+    logger.update("Estableciendo timestamps de arranque...")
     establecer_timestamp_arranque("CONTENIDO")
     establecer_timestamp_arranque("ADDON")
-    logger.info("Timestamps de arranque establecidos.")
+    logger.update("Timestamps de arranque establecidos.")
 
     # Lanzar la carga de BD en background
     asyncio.create_task(background_db_loader())
@@ -672,11 +672,11 @@ async def actualizar_bd():
 
     if contenido_actualizado or addon_actualizado:
         if contenido_actualizado:
-            logger.info("Tarea programada: Nueva versión de CONTENIDO detectada (commit posterior al arranque).")
+            logger.update("Tarea programada: Nueva versión de CONTENIDO detectada (commit posterior al arranque).")
         if addon_actualizado:
-            logger.info("Tarea programada: Nueva versión de ADDON detectada (commit posterior al arranque).")
+            logger.update("Tarea programada: Nueva versión de ADDON detectada (commit posterior al arranque).")
         
-        logger.info("Iniciando secuencia de reinicio...")
+        logger.update("Iniciando secuencia de reinicio...")
         
         if RENDER_API_URL:
             if await trigger_render_restart():

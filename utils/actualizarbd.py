@@ -25,12 +25,12 @@ def establecer_timestamp_arranque(tipo_contenido):
     ahora = datetime.now(timezone.utc).isoformat()
     with open(fichero_timestamp, 'w') as f:
         f.write(ahora)
-    logger.info(f"Timestamp de arranque establecido para {tipo_contenido}: {ahora}")
+    logger.update(f"Timestamp de arranque establecido para {tipo_contenido}: {ahora}")
     return ahora
 
 async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
     """Compara el timestamp del último commit remoto con la hora de arranque local."""
-    logger.info(f"Comprobando actualizaciones del {tipo_contenido}...")
+    logger.update(f"Comprobando actualizaciones del {tipo_contenido}...")
     
     hora_arranque = None
     if os.path.exists(fichero_timestamp):
@@ -74,11 +74,11 @@ async def _comprobar_remoto(url_atom, fichero_timestamp, tipo_contenido):
         logger.error(f"No se pudo comprobar la actualización para {tipo_contenido}: {e}")
         return False
 
-    logger.info(f"Hora de arranque {tipo_contenido}: {hora_arranque}")
-    logger.info(f"Último commit remoto {tipo_contenido}: {latest_remote_timestamp}")
+    logger.update(f"Hora de arranque {tipo_contenido}: {hora_arranque}")
+    logger.update(f"Último commit remoto {tipo_contenido}: {latest_remote_timestamp}")
 
     if latest_remote_timestamp > hora_arranque:
-        logger.info(f"¡Nueva actualización de {tipo_contenido} detectada! (commit posterior al arranque)")
+        logger.update(f"¡Nueva actualización de {tipo_contenido} detectada! (commit posterior al arranque)")
         return True
     
     return False
