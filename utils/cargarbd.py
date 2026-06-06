@@ -37,12 +37,12 @@ def clone_or_update_repo():
     Descarga la última versión del repositorio desde GitHub como un archivo ZIP y la extrae.
     """
     zip_url = REPO_URL.replace('.git', '/archive/refs/heads/main.zip')
-    logger.info("Descargando ZIP del repositorio...")
+    logger.update("Descargando ZIP del repositorio...")
     resp = requests.get(zip_url, timeout=120)
     resp.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(resp.content), 'r') as z:
         z.extractall(BASE_DIR)
-    logger.info(f"Repositorio descomprimido en '{REPO_DIR}'")
+    logger.update(f"Repositorio descomprimido en '{REPO_DIR}'")
 
 def download_and_process_file(url_or_path):
     """
@@ -68,14 +68,14 @@ def download_and_process_file(url_or_path):
     
     with zipfile.ZipFile(io.BytesIO(decoded_data), 'r') as zfile:
         zfile.extractall(REPO_DIR)
-        logger.info(f"Archivos extraídos en: {os.path.abspath(REPO_DIR)}")
+        logger.update(f"Archivos extraídos en: {os.path.abspath(REPO_DIR)}")
         
     old_file = os.path.join(REPO_DIR, 'settings.xml')
     new_file = os.path.join(REPO_DIR, '92b33381-pl3-42a1-bee0-bbb9d132e83f.tmp')
     
     if os.path.exists(old_file):
         shutil.move(old_file, new_file)
-        logger.info(f"Archivo renombrado a: {os.path.abspath(new_file)}")
+        logger.update(f"Archivo renombrado a: {os.path.abspath(new_file)}")
         return True
     
     logger.warning("El archivo settings.xml no se encontró en el ZIP.")
@@ -155,7 +155,7 @@ def process_up_file(url_or_path):
     try:
         decoded_bytes = p3b64decode_exacto(up_content_encoded)
         up_content = decoded_bytes.decode('utf-8')
-        logger.info(f"Contenido de '{url_or_path}' decodificado con éxito.")
+        logger.update(f"Contenido de '{url_or_path}' decodificado con éxito.")
     except Exception as e:
         logger.error(f"Fallo CRÍTICO al decodificar '{url_or_path}': {e}", exc_info=True)
         return False
@@ -168,7 +168,7 @@ def process_up_file(url_or_path):
             conn = sqlite3.connect(db_file)
             conn.executescript(final_sql_script)
             conn.commit()
-            logger.info(f"Archivo .up procesado e insertado: {url_or_path}")
+            logger.update(f"Archivo .up procesado e insertado: {url_or_path}")
             return True
         except sqlite3.Error as e:
             logger.error(f"Error de base de datos al procesar .up: {e}", exc_info=True)
@@ -211,8 +211,8 @@ def check_and_download():
             except json.JSONDecodeError:
                 logger.warning("El archivo version.txt está corrupto o vacío.")
                 pass # Se continuará con un diccionario vacío
-    logger.info(f"Archivo de control de updates: {os.path.abspath(VERSION_FILE)}")
-    logger.info(f"Commit local registrado: {version_data.get('last_commit')}")
+    logger.update(f"Archivo de control de updates: {os.path.abspath(VERSION_FILE)}")
+    logger.update(f"Commit local registrado: {version_data.get('last_commit')}")
 
     resp = requests.get(REPO_URL_ATOM, timeout=30)
     resp.raise_for_status()
@@ -225,14 +225,14 @@ def check_and_download():
 
     commit_id = entry.find('{http://www.w3.org/2005/Atom}id').text
     commit_sha = commit_id.split('/')[-1]
-    logger.info(f"Commit remoto detectado: {commit_sha}")
+    logger.update(f"Commit remoto detectado: {commit_sha}")
 
     same_commit = commit_sha == version_data.get("last_commit")
     if same_commit:
-        logger.info("El commit remoto ya estaba registrado. Se revisarán hashes de archivos igualmente.")
+        logger.update("El commit remoto ya estaba registrado. Se revisarán hashes de archivos igualmente.")
 
     clone_or_update_repo()
-    logger.info(f"Directorio de contenido tras descarga: {os.path.abspath(REPO_DIR)}")
+    logger.update(f"Directorio de contenido tras descarga: {os.path.abspath(REPO_DIR)}")
     updated = False
     processing_failed = False
 
@@ -252,47 +252,47 @@ def check_and_download():
     zm3_files.sort()
     up_files.sort()
     detected_files.sort()
-    logger.info(f"Archivos detectados en repo: {detected_files}")
-    logger.info(f"ZM3 detectados: {zm3_files}")
-    logger.info(f"UP detectados: {up_files}")
+    logger.update(f"Archivos detectados en repo: {detected_files}")
+    logger.update(f"ZM3 detectados: {zm3_files}")
+    logger.update(f"UP detectados: {up_files}")
 
     # Procesar primero todos los archivos .zm3
     for fname in zm3_files:
         path = os.path.join(REPO_DIR, fname)
         current_hash = compute_hash(path)
-        logger.info(
+        logger.update(
             f"Estado .zm3 {fname}: hash_guardado={version_data.get(fname)} "
             f"hash_actual={current_hash}"
         )
         if version_data.get(fname) != current_hash:
-            logger.info(f"Procesando .zm3: {fname}")
+            logger.update(f"Procesando .zm3: {fname}")
             if download_and_process_file(path):
                 version_data[fname] = current_hash
                 updated = True
-                logger.info("Base de datos descargada.")
-                logger.info("Descifrando base de datos...")
+                logger.update("Base de datos descargada.")
+                logger.update("Descifrando base de datos...")
                 add_flag(DB_ENCRYPTED_PATH)
                 if not up_files:
                     shutil.copy(DB_ENCRYPTED_PATH, DB_DECRYPTED_PATH)
                     decryptbd(DB_DECRYPTED_PATH)
-                logger.info("Base de datos descifrada.")
+                logger.update("Base de datos descifrada.")
             else:
                 processing_failed = True
                 logger.error(f"No se pudo procesar .zm3: {fname}")
                 
         else:
-            logger.info(f"Sin cambios en {fname}")
+            logger.update(f"Sin cambios en {fname}")
             
     # Procesar después todos los archivos .up
     for fname in up_files:
         path = os.path.join(REPO_DIR, fname)
         current_hash = compute_hash(path)
-        logger.info(
+        logger.update(
             f"Estado .up {fname}: hash_guardado={version_data.get(fname)} "
             f"hash_actual={current_hash}"
         )
         if version_data.get(fname) != current_hash:
-            logger.info(f"Procesando .up: {fname}")
+            logger.update(f"Procesando .up: {fname}")
             if process_up_file(path):
                 version_data[fname] = current_hash
                 updated = True
@@ -300,7 +300,7 @@ def check_and_download():
                 processing_failed = True
                 logger.error(f"No se pudo procesar .up: {fname}")
         else:
-            logger.info(f"Sin cambios en {fname}")
+            logger.update(f"Sin cambios en {fname}")
 
     if up_files:
         shutil.copy(DB_ENCRYPTED_PATH, DB_DECRYPTED_PATH)
@@ -312,7 +312,7 @@ def check_and_download():
     else:
         version_data["last_commit"] = commit_sha
         if not updated and same_commit:
-            logger.info("No hay archivos nuevos o modificados que procesar.")
+            logger.update("No hay archivos nuevos o modificados que procesar.")
     with open(VERSION_FILE, 'w') as f:
         json.dump(version_data, f, indent=4)
 

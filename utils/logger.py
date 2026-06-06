@@ -1,5 +1,17 @@
 import logging
 
+UPDATE = 25
+logging.addLevelName(UPDATE, "UPDATE")
+
+
+def update(self, message, *args, **kwargs):
+    if self.isEnabledFor(UPDATE):
+        kwargs["stacklevel"] = kwargs.get("stacklevel", 1) + 1
+        self._log(UPDATE, message, args, **kwargs)
+
+
+logging.Logger.update = update
+
 
 class CustomFormatter(logging.Formatter):
     """Logging Formatter to add colors and count warning / errors"""
@@ -16,6 +28,7 @@ class CustomFormatter(logging.Formatter):
     FORMATS = {
         logging.DEBUG: grey + format + reset,
         logging.INFO: grey + format + reset,
+        UPDATE: green + format + reset,
         logging.WARNING: yellow + format + reset,
         logging.ERROR: red + format + reset,
         logging.CRITICAL: bold_red + format + reset
