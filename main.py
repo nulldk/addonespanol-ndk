@@ -93,7 +93,6 @@ async def check_real_debrid_1fichier_availability():
         cache.set(FICHIER_STATUS_KEY, status, ttl=1800)
         logger.update(f"Estado de 1fichier en Real-Debrid actualizado a: '{status}'")
 
-@crontab("*/15 * * * *", start=False)
 async def scheduled_fichier_check():
     await check_real_debrid_1fichier_availability()
 
@@ -156,8 +155,12 @@ async def lifespan(app: FastAPI):
     os.makedirs(WORKING_PATH, exist_ok=True)
 
     if not IS_DEV:
-        for cron in (scheduled_fichier_check, actualizar_bd, ping_service):
-            cron.start()
+        loop = asyncio.get_running_loop()
+        app.state.cron_jobs = [
+            crontab("*/15 * * * *", func=scheduled_fichier_check, start=True, loop=loop),
+            crontab("*/5 * * * *", func=actualizar_bd, start=True, loop=loop),
+            crontab("* * * * *", func=ping_service, start=True, loop=loop),
+        ]
         logger.info("Tareas programadas iniciadas.")
 
     cache.set(FICHIER_STATUS_KEY, "up")
@@ -174,7 +177,7 @@ async def lifespan(app: FastAPI):
     logger.info("Servidor HTTP iniciado. La carga de datos continúa en segundo plano.")
     yield
     if not IS_DEV:
-        for cron in (scheduled_fichier_check, actualizar_bd, ping_service):
+        for cron in getattr(app.state, "cron_jobs", []):
             cron.stop()
         logger.info("Tareas programadas detenidas.")
     logger.info("La aplicación se está cerrando.")
@@ -670,7 +673,6 @@ async def trigger_render_restart():
         logger.error(f"Error en la respuesta de Render ({e.response.status_code}): {e.response.text}")
         return False
 
-@crontab("*/5 * * * *", start=False)
 async def actualizar_bd():
     """
     Tarea programada que comprueba si hay nuevas versiones y reinicia el servicio si es necesario.
@@ -695,7 +697,6 @@ async def actualizar_bd():
         sys.exit(1)
 
 
-@crontab("* * * * *", start=False)
 async def ping_service():
     """Mantiene el servicio activo en plataformas como Render haciendo un ping cada minuto."""
     try:
