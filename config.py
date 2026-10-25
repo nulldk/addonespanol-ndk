@@ -34,3 +34,7 @@ PING_URL = 'https://addonespanol-ndk.onrender.com/'
 RENDER_API_URL = os.getenv("RENDER_DEPLOY_HOOK")
 RENDER_AUTH_HEADER = f"Bearer {os.getenv('RENDER_API_KEY')}"
 
+# Base URL of the NAS catalog service, without a trailing slash.
+# The app calls {NAS_BASE_URL}/updatedb. Leave unset to skip that call.
+NAS_BASE_URL = os.getenv("NAS_BASE_URL", "").strip().rstrip("/")
+

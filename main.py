@@ -47,7 +47,8 @@ from config import (
     ADMIN_PATH_DB_ENCRYPTED,
     ADMIN_PATH_DB_DECRYPTED,
     ADMIN_PATH_RESTART,
-    WORKING_PATH
+    WORKING_PATH,
+    NAS_BASE_URL
 )
 
 # --- Inicialización ---
@@ -103,10 +104,14 @@ async def schedule_catalog_update_notification():
     logger.update(f"Programando llamada a updatedb en {wait_time_seconds} segundos...")
     
     await asyncio.sleep(wait_time_seconds)
-    
+
+    if not NAS_BASE_URL:
+        logger.warning("NAS_BASE_URL no está configurada; se omite la llamada a updatedb.")
+        return
+
     try:
-        url = 'https://nas.example.invalid/updatedb'
-        logger.update(f"Ejecutando llamada diferida a: {url}")
+        url = f"{NAS_BASE_URL}/updatedb"
+        logger.update("Ejecutando llamada diferida a updatedb")
         await http_client.get(url)
         logger.update("Llamada a updatedb realizada con éxito.")
     except Exception as e:
